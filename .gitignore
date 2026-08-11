@@ -1,0 +1,30 @@
+# Node / Expo
+node_modules/
+.expo/
+dist/
+*.tsbuildinfo
+
+# Android build
+lora_app/android/app/build/
+lora_app/android/.gradle/
+lora_app/android/local.properties
+
+# Rust / Cargo
+target/
+**/.cargo/registry/
+**/.cargo/git/
+
+# ESP-IDF build artifacts
+build/
+sdkconfig
+managed_components/
+
+# Secrets / local config
+.env
+.env.local
+*.local.toml
+secrets/
+
+# OS
+.DS_Store
+Thumbs.db

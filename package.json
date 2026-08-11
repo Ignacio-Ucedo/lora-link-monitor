@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "react-native-svg": "^15.15.3"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14"
+  }
+}

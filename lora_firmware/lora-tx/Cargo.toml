@@ -1,0 +1,15 @@
+[package]
+name = "lora-tx"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "lora-tx"
+path = "src/main.rs"
+
+[dependencies]
+lr1121 = { path = "../lr1121" }
+log = "0.4"
+esp-idf-hal = "0.46"
+esp-idf-svc = { version = "0.52", features = ["alloc"] }
+esp-idf-sys = { version = "0.36", features = ["binstart"] }
