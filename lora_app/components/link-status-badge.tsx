@@ -40,6 +40,6 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     alignSelf: "center",
   },
-  smallText: { fontSize: 12, fontWeight: "bold", letterSpacing: 1 },
-  largeText: { fontSize: 26, fontWeight: "bold", letterSpacing: 2 },
+  smallText: { fontSize: 12, fontWeight: "bold", letterSpacing: 1, lineHeight: 18 },
+  largeText: { fontSize: 26, fontWeight: "bold", letterSpacing: 2, lineHeight: 36 },
 });

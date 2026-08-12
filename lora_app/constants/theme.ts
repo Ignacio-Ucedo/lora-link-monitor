@@ -51,7 +51,7 @@ export const Colors = {
     blue: "#4f88d3",
     brightBlue: "#4FA3FF",
     fontBlue: "#7fd3ff",
-    gridGray: "#444",
+    gridGray: "#3a4560",
     eventsCard: "#161b28",
     modalOverlay: "#00000080",
   },

@@ -60,7 +60,7 @@ function StatRow({
   return (
     <View style={styles.statRow}>
       <ThemedText style={{ color: theme.gray, fontSize: 12 }}>{label}</ThemedText>
-      <ThemedText style={{ fontSize: 13, fontWeight: "500", color: valueColor }}>{value}</ThemedText>
+      <ThemedText color={valueColor} style={{ fontSize: 13, fontWeight: "500" }}>{value}</ThemedText>
     </View>
   );
 }

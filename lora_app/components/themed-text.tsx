@@ -48,11 +48,11 @@ export function ThemedText({
 const styles = StyleSheet.create({
   default: {
     fontSize: 14,
-    lineHeight: 14,
+    lineHeight: 20,
   },
   title: {
     fontSize: 22,
-    lineHeight: 22,
+    lineHeight: 30,
   },
   cardTitle: {
     fontSize: 14,
