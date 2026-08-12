@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { LinkStatusBadge } from "@/components/link-status-badge";
@@ -9,9 +9,12 @@ import { ThemedCard } from "@/components/themed-card";
 import { ThemedText } from "@/components/themed-text";
 import Separator from "@/components/separator";
 import NearDevicesScreen from "@/ble/near-devices-screen";
+import { connectToDevice } from "@/ble/ble-manager";
+import { getKnownDevice, clearKnownDevice } from "@/ble/device-storage";
 
 import { useSession } from "@/hooks/session-context";
 import { useTheme } from "@/hooks/use-theme";
+import { BleTransport } from "@/lib/transport";
 
 const AMBER = "#d3b64f";
 
@@ -64,8 +67,34 @@ function StatRow({
 
 export default function MonitorScreen() {
   const theme = useTheme();
-  const { mode, packets, stats, linkQuality, reset, switchToMock } = useSession();
+  const { mode, packets, stats, linkQuality, reset, switchToMock, switchToBle } = useSession();
   const [showConnect, setShowConnect] = useState(false);
+  const [autoConnecting, setAutoConnecting] = useState(false);
+  const cancelled = useRef(false);
+
+  useEffect(() => {
+    cancelled.current = false;
+
+    async function tryAutoConnect() {
+      const saved = await getKnownDevice();
+      if (!saved || cancelled.current) return;
+
+      setAutoConnecting(true);
+      try {
+        const device = await connectToDevice(saved.id);
+        if (!cancelled.current) switchToBle(new BleTransport(device));
+      } catch {
+        // Device out of range or BLE off — stay in mock mode silently
+        await clearKnownDevice();
+      } finally {
+        if (!cancelled.current) setAutoConnecting(false);
+      }
+    }
+
+    if (mode === "mock") tryAutoConnect();
+
+    return () => { cancelled.current = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rssiData = useMemo(
     () => packets.slice(0, 30).reverse().map((p) => p.rssi),
@@ -83,15 +112,22 @@ export default function MonitorScreen() {
       {/* Header */}
       <View style={[styles.header, { borderBottomColor: theme.border, backgroundColor: theme.eventsCard }]}>
         <View style={styles.headerLeft}>
-          <View style={[styles.dot, { backgroundColor: mode === "mock" ? theme.gray : theme.green }]} />
-          <ThemedText style={{ fontSize: 12, color: theme.gray }}>
-            {mode === "mock" ? "MODO SIMULADO" : "BLE CONECTADO"}
+          {autoConnecting
+            ? <ActivityIndicator size="small" color={theme.blue} style={{ marginRight: 2 }} />
+            : <View style={[styles.dot, { backgroundColor: mode === "mock" ? theme.gray : theme.green }]} />
+          }
+          <ThemedText style={{ fontSize: 12, color: autoConnecting ? theme.blue : theme.gray }}>
+            {autoConnecting ? "RECONECTANDO…" : mode === "mock" ? "MODO SIMULADO" : "BLE CONECTADO"}
           </ThemedText>
         </View>
 
         {mode === "mock" ? (
-          <AppButton onPress={() => setShowConnect(true)} padding={0} style={styles.headerBtn}>
-            <ThemedText style={{ fontSize: 11, color: theme.blue, paddingHorizontal: 10, paddingVertical: 4 }}>
+          <AppButton
+            onPress={autoConnecting ? undefined : () => setShowConnect(true)}
+            padding={0}
+            style={styles.headerBtn}
+          >
+            <ThemedText style={{ fontSize: 11, color: autoConnecting ? theme.gray : theme.blue, paddingHorizontal: 10, paddingVertical: 4 }}>
               CONECTAR
             </ThemedText>
           </AppButton>
