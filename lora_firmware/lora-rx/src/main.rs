@@ -23,7 +23,10 @@ use lr1121::{
     DEFAULT_BW_KHZ, DEFAULT_CR, DEFAULT_FREQ_HZ, DEFAULT_SF,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 // ─── UUIDs (16-bit, coinciden con protocol.ts a través de la base BT UUID) ───
 
@@ -127,6 +130,7 @@ fn main() {
     };
 
     let cfg = Arc::new(Mutex::new(RadioConfig::default()));
+    let reconfig_flag = Arc::new(AtomicBool::new(false));
 
     apply_rx_config(&mut radio, &cfg.lock().unwrap());
     radio.start_rx().expect("start_rx");
@@ -167,9 +171,10 @@ fn main() {
     // CHAR_COMMAND: write — procesa SET_RADIO_CONFIG
     let char_cmd_ble = service.lock().create_characteristic(CHAR_CMD, NimBLECharacteristicProperty::WRITE);
     {
-        let cfg_clone     = cfg.clone();
-        let char_cfg_ref  = char_cfg_ble.clone();
-        let char_stat_ref = char_status.clone();
+        let cfg_clone        = cfg.clone();
+        let reconfig_clone   = reconfig_flag.clone();
+        let char_cfg_ref     = char_cfg_ble.clone();
+        let char_stat_ref    = char_status.clone();
 
         char_cmd_ble.lock().on_write(move |args| {
             let Some(json) = decode_b64_json(args.recv_data()) else { return };
@@ -180,6 +185,7 @@ fn main() {
                     Ok(new_cfg) => {
                         info!("BLE SET_RADIO_CONFIG: {}Hz SF{} BW{}", new_cfg.freq_hz, new_cfg.sf, new_cfg.bw_khz);
                         *cfg_clone.lock().unwrap() = new_cfg.clone();
+                        reconfig_clone.store(true, Ordering::Relaxed);
                         char_cfg_ref.lock().set_value(&b64_json(&new_cfg));
                         char_stat_ref.lock().set_value(&b64_json(&serde_json::json!({"success": true})));
                     }
@@ -207,21 +213,12 @@ fn main() {
     info!("lora-rx: BLE advertising como \"LORA-RX-01\"");
 
     // ─── Main loop ───────────────────────────────────────────────────────────
-    let mut pending_reconfig = false;
-
     loop {
-        // Aplicar reconfiguración pendiente (solicitada por BLE callback)
-        if pending_reconfig {
+        if reconfig_flag.swap(false, Ordering::Relaxed) {
             let c = cfg.lock().unwrap().clone();
             apply_rx_config(&mut radio, &c);
             radio.start_rx().unwrap_or_else(|e| error!("start_rx: {:?}", e));
-            pending_reconfig = false;
         }
-
-        // Detectar cambio de config (el callback BLE ya actualizó cfg)
-        // Comparar con la config activa para saber si hay que reconfigurar
-        // (simplificación: chequeamos flag en cada iteración)
-        // Para un diseño más robusto: usar un channel o AtomicBool
 
         match radio.try_receive() {
             Ok(Some(pkt)) => {
@@ -247,9 +244,6 @@ fn main() {
             Err(e) => error!("rx error: {:?}", e),
         }
 
-        // Check si la config cambió (polling simple — sin canal RTOS por ahora)
-        // Para detectar cambio: comparar freq_hz con el valor activo
-        // TODO: reemplazar con AtomicBool set en el on_write callback
         FreeRtos::delay_ms(10);
     }
 }
