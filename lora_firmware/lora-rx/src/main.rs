@@ -5,6 +5,9 @@
 //!
 //! BLE: anuncia como "LORA-RX-01", service 0xFF00, características 0xFF01–0xFF05.
 //! Protocolo: JSON base64-encoded (ver CLAUDE.md y lib/protocol.ts).
+//!
+//! NVS: la RadioConfig se persiste en la partición "lora_rx", clave "radio_cfg".
+//! Al boot se restaura la última config aplicada; si no hay nada, usa defaults.
 
 use esp_idf_hal::{
     delay::FreeRtos,
@@ -13,7 +16,10 @@ use esp_idf_hal::{
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SPI2},
     units::Hertz,
 };
-use esp_idf_svc::log::EspLogger;
+use esp_idf_svc::{
+    log::EspLogger,
+    nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault},
+};
 use esp32_nimble::{
     utilities::BleUuid, BLEAdvertisementData, BLEDevice, NimBLECharacteristicProperty,
 };
@@ -30,12 +36,39 @@ use std::sync::{
 
 // ─── UUIDs (16-bit, coinciden con protocol.ts a través de la base BT UUID) ───
 
-const SVC:      BleUuid = BleUuid::from_uuid16(0xff00);
+const SVC:         BleUuid = BleUuid::from_uuid16(0xff00);
 const CHAR_INFO:   BleUuid = BleUuid::from_uuid16(0xff01); // R
 const CHAR_CFG:    BleUuid = BleUuid::from_uuid16(0xff02); // R/W
 const CHAR_STATUS: BleUuid = BleUuid::from_uuid16(0xff03); // R
 const CHAR_PKT:    BleUuid = BleUuid::from_uuid16(0xff04); // Notify
 const CHAR_CMD:    BleUuid = BleUuid::from_uuid16(0xff05); // W
+
+// ─── NVS ──────────────────────────────────────────────────────────────────────
+
+const NVS_NS:  &str = "lora_rx";
+const NVS_KEY: &str = "radio_cfg";
+
+fn load_nvs_config(nvs: &EspNvs<NvsDefault>) -> Option<RadioConfig> {
+    let mut buf = [0u8; 256];
+    match nvs.get_str(NVS_KEY, &mut buf) {
+        Ok(Some(json)) => serde_json::from_str(json).ok(),
+        Ok(None) => None,
+        Err(e) => { warn!("NVS read error: {:?}", e); None }
+    }
+}
+
+fn save_nvs_config(nvs: &mut EspNvs<NvsDefault>, cfg: &RadioConfig) {
+    match serde_json::to_string(cfg) {
+        Ok(json) => {
+            if let Err(e) = nvs.set_str(NVS_KEY, &json) {
+                warn!("NVS write error: {:?}", e);
+            } else {
+                info!("NVS: config guardada");
+            }
+        }
+        Err(e) => warn!("NVS serialize error: {:?}", e),
+    }
+}
 
 // ─── Modelos ──────────────────────────────────────────────────────────────────
 
@@ -99,6 +132,20 @@ fn main() {
 
     let p = Peripherals::take().unwrap();
 
+    // ─── NVS ─────────────────────────────────────────────────────────────────
+    let nvs_partition = EspDefaultNvsPartition::take()
+        .unwrap_or_else(|e| { error!("NVS partition: {:?}", e); panic!("NVS") });
+
+    let mut nvs = EspNvs::new(nvs_partition, NVS_NS, true)
+        .unwrap_or_else(|e| { error!("NVS namespace: {:?}", e); panic!("NVS") });
+
+    let initial_cfg = load_nvs_config(&nvs).unwrap_or_else(|| {
+        info!("NVS: sin config guardada, usando defaults");
+        RadioConfig::default()
+    });
+    info!("NVS: config cargada — {}Hz SF{} BW{}",
+        initial_cfg.freq_hz, initial_cfg.sf, initial_cfg.bw_khz);
+
     // ─── SPI ─────────────────────────────────────────────────────────────────
     let spi_driver = SpiDriver::new::<SPI2>(
         p.spi2,
@@ -129,8 +176,9 @@ fn main() {
         Err(e) => { error!("lr1121 init: {:?}", e); loop { FreeRtos::delay_ms(1000); } }
     };
 
-    let cfg = Arc::new(Mutex::new(RadioConfig::default()));
+    let cfg         = Arc::new(Mutex::new(initial_cfg));
     let reconfig_flag = Arc::new(AtomicBool::new(false));
+    let save_nvs_flag = Arc::new(AtomicBool::new(false));
 
     apply_rx_config(&mut radio, &cfg.lock().unwrap());
     radio.start_rx().expect("start_rx");
@@ -171,10 +219,11 @@ fn main() {
     // CHAR_COMMAND: write — procesa SET_RADIO_CONFIG
     let char_cmd_ble = service.lock().create_characteristic(CHAR_CMD, NimBLECharacteristicProperty::WRITE);
     {
-        let cfg_clone        = cfg.clone();
-        let reconfig_clone   = reconfig_flag.clone();
-        let char_cfg_ref     = char_cfg_ble.clone();
-        let char_stat_ref    = char_status.clone();
+        let cfg_clone      = cfg.clone();
+        let reconfig_clone = reconfig_flag.clone();
+        let save_clone     = save_nvs_flag.clone();
+        let char_cfg_ref   = char_cfg_ble.clone();
+        let char_stat_ref  = char_status.clone();
 
         char_cmd_ble.lock().on_write(move |args| {
             let Some(json) = decode_b64_json(args.recv_data()) else { return };
@@ -186,6 +235,7 @@ fn main() {
                         info!("BLE SET_RADIO_CONFIG: {}Hz SF{} BW{}", new_cfg.freq_hz, new_cfg.sf, new_cfg.bw_khz);
                         *cfg_clone.lock().unwrap() = new_cfg.clone();
                         reconfig_clone.store(true, Ordering::Relaxed);
+                        save_clone.store(true, Ordering::Relaxed); // persistir en NVS
                         char_cfg_ref.lock().set_value(&b64_json(&new_cfg));
                         char_stat_ref.lock().set_value(&b64_json(&serde_json::json!({"success": true})));
                     }
@@ -214,10 +264,17 @@ fn main() {
 
     // ─── Main loop ───────────────────────────────────────────────────────────
     loop {
+        // Reconfigurar radio si llegó SET_RADIO_CONFIG
         if reconfig_flag.swap(false, Ordering::Relaxed) {
             let c = cfg.lock().unwrap().clone();
             apply_rx_config(&mut radio, &c);
             radio.start_rx().unwrap_or_else(|e| error!("start_rx: {:?}", e));
+        }
+
+        // Persistir config en NVS (fuera del callback BLE para evitar latencia)
+        if save_nvs_flag.swap(false, Ordering::Relaxed) {
+            let c = cfg.lock().unwrap().clone();
+            save_nvs_config(&mut nvs, &c);
         }
 
         match radio.try_receive() {
