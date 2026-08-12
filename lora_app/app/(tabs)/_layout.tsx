@@ -44,6 +44,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="test"
+        options={{
+          title: "Test",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={26} name="antenna.radiowaves.left.and.right" color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
