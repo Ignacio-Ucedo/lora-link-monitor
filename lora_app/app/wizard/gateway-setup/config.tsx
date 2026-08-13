@@ -15,8 +15,14 @@ import type { RadioConfig } from "@/lib/models";
 
 const AMBER = "#d3b64f";
 
+const FREQ_PRESETS = [
+  { label: "EU868", freqMHz: 868.1 },
+  { label: "AU915", freqMHz: 916.8 },
+  { label: "US915", freqMHz: 915.0 },
+] as const;
+
 const TIPS: Record<string, string> = {
-  freq: "Frecuencia de operación del canal RF. Para AU915 usar entre 915 y 928 MHz. TX y RX deben coincidir exactamente.",
+  freq: "Frecuencia de operación del canal RF. Usá un preset regional o ingresá un valor personalizado. TX y RX deben coincidir exactamente.",
   sf:   "Spreading Factor: mayor SF = mayor alcance y sensibilidad, pero menor velocidad y más tiempo en el aire. SF7 es el más rápido; SF12 el de mayor alcance.",
   bw:   "Ancho de banda del canal. Mayor BW = más velocidad, pero menor sensibilidad. 125 kHz es el estándar LoRa para balance entre alcance y tasa de datos.",
   cr:   "Coding Rate: nivel de corrección de errores (FEC). 4/5 es el más eficiente; 4/8 añade más redundancia para entornos con mucho ruido RF.",
@@ -134,6 +140,20 @@ export default function GatewayConfigScreen() {
         <ThemedCard gap={14}>
           <View style={styles.field}>
             <FieldLabel label="Frecuencia" tipKey="freq" open={openTip === "freq"} onToggle={() => toggleTip("freq")} />
+            <View style={styles.optionGroup}>
+              {FREQ_PRESETS.map(({ label, freqMHz }) => {
+                const active = parseFloat(freq) === freqMHz;
+                return (
+                  <TouchableOpacity
+                    key={label}
+                    onPress={() => setFreq(freqMHz.toFixed(3))}
+                    style={[styles.optionBtn, { backgroundColor: active ? theme.blue : theme.buttonBackground, borderColor: active ? theme.blue : theme.border }]}
+                  >
+                    <ThemedText color={active ? "#fff" : theme.text} style={{ fontSize: 12 }}>{label}</ThemedText>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
             <NumInput value={freq} onChange={setFreq} suffix="MHz" />
           </View>
           <Separator />
