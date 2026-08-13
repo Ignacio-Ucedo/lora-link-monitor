@@ -6,8 +6,15 @@ dist/
 
 # Android build
 lora_app/android/app/build/
+lora_app/android/app/.cxx/
 lora_app/android/.gradle/
 lora_app/android/local.properties
+lora_app/android/app/src/main/assets/
+lora_app/android/app/src/main/res/drawable-mdpi/node_modules_*
+lora_app/android/app/src/main/res/drawable-xhdpi/node_modules_*
+lora_app/android/app/src/main/res/drawable-xxhdpi/node_modules_*
+lora_app/android/app/src/main/res/drawable-xxxhdpi/node_modules_*
+lora_app/android/app/src/main/res/raw/
 
 # Rust / Cargo
 target/
@@ -18,6 +25,7 @@ target/
 build/
 sdkconfig
 managed_components/
+lora_firmware/.embuild/
 
 # Secrets / local config
 .env
