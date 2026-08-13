@@ -15,7 +15,7 @@
 
 use esp_idf_hal::{
     delay::FreeRtos,
-    gpio::PinDriver,
+    gpio::{PinDriver, Pull},
     peripherals::Peripherals,
     spi::{config::Config as SpiConfig, SpiDeviceDriver, SpiDriver, SPI2},
     units::Hertz,
@@ -132,7 +132,7 @@ fn main() {
     let spi: esp_idf_hal::spi::SpiDeviceDriver<'static, _> = unsafe { core::mem::transmute(spi) };
 
     // ─── GPIO ─────────────────────────────────────────────────────────────────
-    let busy  = PinDriver::input(p.pins.gpio32).expect("BUSY");
+    let busy  = PinDriver::input(p.pins.gpio32, Pull::Floating).expect("BUSY");
     let reset = PinDriver::output(p.pins.gpio33).expect("RESET");
 
     let busy:  esp_idf_hal::gpio::PinDriver<'static, _> = unsafe { core::mem::transmute(busy) };
