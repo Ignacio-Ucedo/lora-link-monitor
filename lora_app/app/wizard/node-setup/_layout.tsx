@@ -3,10 +3,12 @@ import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { Colors } from "@/constants/theme";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useWizardBack } from "@/hooks/use-wizard-back";
 
-export default function TabLayout() {
+export default function NodeSetupLayout() {
   const colorScheme = useColorScheme();
   const scheme = colorScheme ?? "dark";
+  useWizardBack("node_connect", "/wizard/node-connect");
 
   return (
     <Tabs
@@ -18,38 +20,20 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen
-        name="index"
-        options={{
-          title: "Monitor",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="waveform" color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="config"
         options={{
-          title: "Config",
+          title: "Config nodo",
           tabBarIcon: ({ color }) => (
             <IconSymbol size={26} name="gearshape.fill" color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="log"
+        name="verify"
         options={{
-          title: "Log",
+          title: "Enlace",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="list.bullet" color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="test"
-        options={{
-          title: "Test",
-          tabBarIcon: ({ color }) => (
-            <IconSymbol size={26} name="antenna.radiowaves.left.and.right" color={color} />
+            <IconSymbol size={26} name="waveform" color={color} />
           ),
         }}
       />

@@ -32,6 +32,8 @@ interface SessionContextValue {
   configAckStatus: AckStatus;
   reset: () => void;
   applyConfig: (config: RadioConfig) => void;
+  applyDeviceName: (name: string, onResult: (ok: boolean) => void) => void;
+  applyWifiCredentials: (ssid: string, password: string, onResult: (ok: boolean) => void) => void;
   switchToMock: () => void;
   switchToBle: (transport: ITransport) => void;
 }
@@ -92,6 +94,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const applyDeviceName = useCallback(
+    (name: string, onResult: (ok: boolean) => void) => {
+      transportRef.current.sendDeviceName(name, onResult);
+    },
+    [],
+  );
+
+  const applyWifiCredentials = useCallback(
+    (ssid: string, password: string, onResult: (ok: boolean) => void) => {
+      transportRef.current.sendWifiCredentials(ssid, password, onResult);
+    },
+    [],
+  );
+
   const switchTransport = useCallback(
     (next: ITransport, nextMode: TransportMode) => {
       transportRef.current.stop();
@@ -127,6 +143,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         configAckStatus,
         reset,
         applyConfig,
+        applyDeviceName,
+        applyWifiCredentials,
         switchToMock,
         switchToBle,
       }}

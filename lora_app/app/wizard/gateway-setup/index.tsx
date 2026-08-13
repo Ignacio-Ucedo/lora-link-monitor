@@ -8,19 +8,19 @@ import { AppButton } from "@/components/app-button";
 import { ThemedCard } from "@/components/themed-card";
 import { ThemedText } from "@/components/themed-text";
 import Separator from "@/components/separator";
+import { WizardProgress } from "@/components/wizard-progress";
 import NearDevicesScreen from "@/ble/near-devices-screen";
 import { connectToDevice } from "@/ble/ble-manager";
 import { getKnownDevice, clearKnownDevice } from "@/ble/device-storage";
 
 import { useSession } from "@/hooks/session-context";
 import { useTheme } from "@/hooks/use-theme";
-import { BleTransport } from "@/lib/transport";
+import { GatewayBleTransport } from "@/lib/transport";
 
 const AMBER = "#d3b64f";
+const NO_LINK_DIAG_DELAY_MS = 30_000;
 
-function fmt1(n: number) {
-  return n.toFixed(1);
-}
+function fmt1(n: number) { return n.toFixed(1); }
 
 function timeSince(ts: number | null): string {
   if (ts === null) return "—";
@@ -29,33 +29,23 @@ function timeSince(ts: number | null): string {
   return `${(s / 60).toFixed(1)}min`;
 }
 
-function pdrColor(pdr: number, green: string, red: string): string {
+function pdrColor(pdr: number, green: string, red: string) {
   if (pdr >= 98) return green;
   if (pdr >= 85) return AMBER;
   return red;
 }
-
-function rssiColor(rssi: number, green: string, red: string): string {
+function rssiColor(rssi: number, green: string, red: string) {
   if (rssi >= -70) return green;
   if (rssi >= -90) return AMBER;
   return red;
 }
-
-function snrColor(snr: number, green: string, red: string): string {
+function snrColor(snr: number, green: string, red: string) {
   if (snr >= 7) return green;
   if (snr >= 0) return AMBER;
   return red;
 }
 
-function StatRow({
-  label,
-  value,
-  valueColor,
-}: {
-  label: string;
-  value: string;
-  valueColor?: string;
-}) {
+function StatRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   const theme = useTheme();
   return (
     <View style={styles.statRow}>
@@ -65,36 +55,68 @@ function StatRow({
   );
 }
 
-export default function MonitorScreen() {
+function NoLinkDiagnostic() {
+  const theme = useTheme();
+  return (
+    <ThemedCard gap={10} style={{ borderLeftWidth: 3, borderLeftColor: AMBER }}>
+      <ThemedText style={{ color: AMBER, fontWeight: "600", fontSize: 13 }}>
+        Sin enlace — posibles causas
+      </ThemedText>
+      <Separator />
+      {[
+        "¿El nodo está encendido?",
+        "¿Frecuencia, SF, BW y CR del nodo coinciden con el gateway?",
+        "¿Hay obstrucción física entre nodo y gateway?",
+        "¿La antena del nodo está orientada correctamente?",
+      ].map((item) => (
+        <ThemedText key={item} style={{ color: theme.text, fontSize: 12, lineHeight: 18 }}>
+          · {item}
+        </ThemedText>
+      ))}
+    </ThemedCard>
+  );
+}
+
+export default function GatewayMonitorScreen() {
   const theme = useTheme();
   const { mode, packets, stats, linkQuality, reset, switchToMock, switchToBle } = useSession();
   const [showConnect, setShowConnect] = useState(false);
   const [autoConnecting, setAutoConnecting] = useState(false);
+  const [showDiag, setShowDiag] = useState(false);
   const cancelled = useRef(false);
+  const noLinkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     cancelled.current = false;
-
     async function tryAutoConnect() {
       const saved = await getKnownDevice();
       if (!saved || cancelled.current) return;
-
       setAutoConnecting(true);
       try {
         const device = await connectToDevice(saved.id);
-        if (!cancelled.current) switchToBle(new BleTransport(device));
+        if (!cancelled.current) switchToBle(new GatewayBleTransport(device));
       } catch {
-        // Device out of range or BLE off — stay in mock mode silently
         await clearKnownDevice();
       } finally {
         if (!cancelled.current) setAutoConnecting(false);
       }
     }
-
     if (mode === "mock") tryAutoConnect();
-
     return () => { cancelled.current = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // NO_LINK diagnostic: show after 30s of NO_LINK
+  useEffect(() => {
+    if (linkQuality === "NO_LINK") {
+      noLinkTimer.current = setTimeout(() => setShowDiag(true), NO_LINK_DIAG_DELAY_MS);
+    } else {
+      if (noLinkTimer.current) clearTimeout(noLinkTimer.current);
+      setShowDiag(false);
+    }
+    return () => {
+      if (noLinkTimer.current) clearTimeout(noLinkTimer.current);
+    };
+  }, [linkQuality]);
 
   const rssiData = useMemo(
     () => packets.slice(0, 30).reverse().map((p) => p.rssi),
@@ -104,12 +126,12 @@ export default function MonitorScreen() {
     () => packets.slice(0, 30).reverse().map((p) => p.snr),
     [packets],
   );
-
   const m = stats.metrics;
 
   return (
     <SafeAreaView edges={["top"]} style={[styles.screen, { backgroundColor: theme.background }]}>
-      {/* Header */}
+      <WizardProgress />
+
       <View style={[styles.header, { borderBottomColor: theme.border, backgroundColor: theme.eventsCard }]}>
         <View style={styles.headerLeft}>
           {autoConnecting
@@ -117,7 +139,7 @@ export default function MonitorScreen() {
             : <View style={[styles.dot, { backgroundColor: mode === "mock" ? theme.gray : theme.green }]} />
           }
           <ThemedText style={{ fontSize: 12, color: autoConnecting ? theme.blue : theme.gray }}>
-            {autoConnecting ? "RECONECTANDO…" : mode === "mock" ? "MODO SIMULADO" : "BLE CONECTADO"}
+            {autoConnecting ? "RECONECTANDO…" : mode === "mock" ? "MODO SIMULADO" : "GATEWAY CONECTADO"}
           </ThemedText>
         </View>
 
@@ -148,7 +170,6 @@ export default function MonitorScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scroll}>
-        {/* Link Status */}
         <ThemedCard gap={10}>
           <ThemedText type="cardTitle" style={{ textAlign: "center" }}>ESTADO DEL ENLACE</ThemedText>
           <LinkStatusBadge quality={linkQuality} large />
@@ -170,7 +191,8 @@ export default function MonitorScreen() {
           )}
         </ThemedCard>
 
-        {/* Stats */}
+        {showDiag && <NoLinkDiagnostic />}
+
         <View style={styles.row}>
           <ThemedCard gap={6} style={styles.halfCard}>
             <ThemedText type="cardTitle">PAQUETES</ThemedText>
@@ -213,13 +235,11 @@ export default function MonitorScreen() {
           </View>
         </View>
 
-        {/* Charts */}
         <ThemedCard gap={12}>
           <SignalChart data={rssiData} color={theme.brightBlue} label="RSSI" unit="dBm" yMin={-110} yMax={-40} />
           <SignalChart data={snrData} color={theme.turquoise} label="SNR" unit="dB" yMin={-10} yMax={15} />
         </ThemedCard>
 
-        {/* Timing */}
         <ThemedCard gap={6}>
           <ThemedText type="cardTitle">TIEMPOS</ThemedText>
           <Separator />
@@ -231,7 +251,6 @@ export default function MonitorScreen() {
         </ThemedCard>
       </ScrollView>
 
-      {/* Modal de conexión BLE */}
       <Modal
         visible={showConnect}
         animationType="slide"
@@ -240,7 +259,7 @@ export default function MonitorScreen() {
       >
         <SafeAreaView style={[styles.modalScreen, { backgroundColor: theme.background }]}>
           <View style={[styles.modalHeader, { borderBottomColor: theme.border, backgroundColor: theme.eventsCard }]}>
-            <ThemedText type="title">Conectar a ESP32</ThemedText>
+            <ThemedText type="title">Conectar gateway</ThemedText>
             <TouchableOpacity onPress={() => setShowConnect(false)} hitSlop={12}>
               <ThemedText style={{ color: theme.gray, fontSize: 22 }}>✕</ThemedText>
             </TouchableOpacity>
@@ -257,12 +276,8 @@ export default function MonitorScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1 },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1,
   },
   headerLeft: { flexDirection: "row", alignItems: "center", gap: 6 },
   headerRight: { flexDirection: "row", gap: 8 },
@@ -271,19 +286,11 @@ const styles = StyleSheet.create({
   scroll: { padding: 14, gap: 12 },
   row: { flexDirection: "row", gap: 12 },
   halfCard: { flex: 1, gap: 12 },
-  statRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
+  statRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   modalScreen: { flex: 1 },
   modalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1,
   },
   modalScroll: { padding: 14 },
 });

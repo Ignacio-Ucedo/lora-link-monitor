@@ -142,6 +142,23 @@ pub unsafe extern "C" fn lr11xx_hal_wakeup(_ctx: *const core::ffi::c_void) -> u8
     0
 }
 
+#[no_mangle]
+pub unsafe extern "C" fn lr11xx_hal_direct_read(
+    _ctx: *const core::ffi::c_void,
+    data: *mut u8, data_length: u16,
+) -> u8 {
+    if HAL_CTX.is_null() { return 1; }
+    let ctx = &mut *HAL_CTX;
+    let rx = core::slice::from_raw_parts_mut(data, data_length as usize);
+    if ctx.spi.read(rx).is_err() { return 1; }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn lr11xx_hal_abort_blocking_cmd(_ctx: *const core::ffi::c_void) -> u8 {
+    0 // no-op: no usamos comandos bloqueantes
+}
+
 // ─── Tipos C para SWDR001 ─────────────────────────────────────────────────────
 
 #[repr(C)]
@@ -212,11 +229,11 @@ extern "C" {
     // RX
     fn lr11xx_radio_set_rx(ctx: *const core::ffi::c_void, timeout_ms: u32) -> u8;
     fn lr11xx_radio_get_rx_buffer_status(ctx: *const core::ffi::c_void, s: *mut Lr11xxRadioRxBufferStatus) -> u8;
-    fn lr11xx_radio_get_lora_packet_status(ctx: *const core::ffi::c_void, s: *mut Lr11xxRadioLoraPacketStatus) -> u8;
+    fn lr11xx_radio_get_lora_pkt_status(ctx: *const core::ffi::c_void, s: *mut Lr11xxRadioLoraPacketStatus) -> u8;
     fn lr11xx_regmem_read_buffer8(ctx: *const core::ffi::c_void, buf: *mut u8, len: u8) -> u8;
 
     // IRQ
-    fn lr11xx_radio_get_and_clear_irq_status(ctx: *const core::ffi::c_void, irq: *mut u32) -> u8;
+    fn lr11xx_system_get_and_clear_irq_status(ctx: *const core::ffi::c_void, irq: *mut u32) -> u8;
 }
 
 // ─── Helper: convierte parámetros de la app al formato del driver ─────────────
@@ -351,7 +368,7 @@ impl Lr1121 {
             FreeRtos::delay_ms(5);
             elapsed += 5;
             let mut irq: u32 = 0;
-            unsafe { lr11xx_radio_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
+            unsafe { lr11xx_system_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
             if irq & IRQ_TX_DONE != 0 { return Ok(()); }
             if elapsed >= deadline_ms { return Err(Lr1121Error::TxTimeout); }
         }
@@ -361,7 +378,7 @@ impl Lr1121 {
     /// Después de retornar un paquete, re-arranca RX continuo.
     pub fn try_receive(&mut self) -> Result<Option<RxPacket>, Lr1121Error> {
         let mut irq: u32 = 0;
-        unsafe { lr11xx_radio_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
+        unsafe { lr11xx_system_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
 
         if irq & IRQ_CRC_ERR != 0 {
             warn!("lr1121: CRC error en paquete recibido");
@@ -373,7 +390,7 @@ impl Lr1121 {
 
         // Leer estado del paquete
         let mut pkt_st = Lr11xxRadioLoraPacketStatus::default();
-        unsafe { lr11xx_radio_get_lora_packet_status(HAL_CTX as *const _, &mut pkt_st) };
+        unsafe { lr11xx_radio_get_lora_pkt_status(HAL_CTX as *const _, &mut pkt_st) };
 
         let mut buf_st = Lr11xxRadioRxBufferStatus::default();
         unsafe {
@@ -392,6 +409,61 @@ impl Lr1121 {
             rssi_dbm: pkt_st.rssi_pkt_in_dbm as i16,
             snr_db: pkt_st.snr_pkt_in_db,
         }))
+    }
+
+    /// Transmite ACK downlink y vuelve a RX continuo.
+    /// Usado por el gateway justo después de recibir un paquete del nodo.
+    pub fn transmit_ack_and_return_rx(
+        &mut self,
+        ack: &[u8],
+        freq_hz: u32, sf: u8, bw_khz: u32, cr: &str, power_dbm: i8,
+    ) -> Result<(), Lr1121Error> {
+        self.configure_tx(freq_hz, sf, bw_khz, cr, power_dbm, ack.len() as u8)?;
+        self.transmit(ack)?;
+        self.configure_rx(freq_hz, sf, bw_khz, cr)?;
+        self.start_rx()
+    }
+
+    /// Configura RX y espera hasta `timeout_ms` por un paquete.
+    /// Errores CRC se tratan como ausencia de paquete (Ok(None)).
+    /// Deja la radio en standby al retornar.
+    pub fn receive_with_timeout_ms(
+        &mut self,
+        freq_hz: u32, sf: u8, bw_khz: u32, cr: &str,
+        timeout_ms: u32,
+    ) -> Result<Option<RxPacket>, Lr1121Error> {
+        self.configure_rx(freq_hz, sf, bw_khz, cr)?;
+        unsafe { check(lr11xx_radio_set_rx(HAL_CTX as *const _, 0))? }
+
+        let mut elapsed = 0u32;
+        loop {
+            FreeRtos::delay_ms(10);
+            elapsed += 10;
+
+            let mut irq: u32 = 0;
+            unsafe { lr11xx_system_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
+
+            if irq & (IRQ_CRC_ERR | IRQ_TIMEOUT) != 0 { return Ok(None); }
+
+            if irq & IRQ_RX_DONE != 0 {
+                let mut pkt_st = Lr11xxRadioLoraPacketStatus::default();
+                unsafe { lr11xx_radio_get_lora_pkt_status(HAL_CTX as *const _, &mut pkt_st) };
+                let mut buf_st = Lr11xxRadioRxBufferStatus::default();
+                unsafe { check(lr11xx_radio_get_rx_buffer_status(HAL_CTX as *const _, &mut buf_st))? };
+                let len = buf_st.payload_length as usize;
+                let mut payload = vec![0u8; len];
+                unsafe {
+                    check(lr11xx_regmem_read_buffer8(HAL_CTX as *const _, payload.as_mut_ptr(), len as u8))?;
+                }
+                return Ok(Some(RxPacket {
+                    payload,
+                    rssi_dbm: pkt_st.rssi_pkt_in_dbm as i16,
+                    snr_db: pkt_st.snr_pkt_in_db,
+                }));
+            }
+
+            if elapsed >= timeout_ms { return Ok(None); }
+        }
     }
 }
 
@@ -442,5 +514,31 @@ pub fn decode_packet(raw: &[u8]) -> Option<(u16, i16, u16, u16)> {
         i16::from_le_bytes([raw[2], raw[3]]),
         u16::from_le_bytes([raw[4], raw[5]]),
         u16::from_le_bytes([raw[6], raw[7]]),
+    ))
+}
+
+// ─── ACK downlink encoding / decoding ────────────────────────────────────────
+// Format (7 bytes): seqAck(u16le) | rssiGw(i16le) | snrGw(i8) | delivered(u8) | crc8
+
+/// Codifica un paquete ACK downlink (gateway → nodo, 7 bytes).
+pub fn encode_ack(seq: u16, rssi_dbm: i16, snr_db: i8, delivered: bool) -> [u8; 7] {
+    let mut buf = [0u8; 7];
+    buf[0..2].copy_from_slice(&seq.to_le_bytes());
+    buf[2..4].copy_from_slice(&rssi_dbm.to_le_bytes());
+    buf[4] = snr_db as u8;
+    buf[5] = delivered as u8;
+    buf[6] = crc8_maxim(&buf[0..6]);
+    buf
+}
+
+/// Decodifica un paquete ACK downlink. Retorna (seqAck, rssiGw, snrGw, delivered).
+pub fn decode_ack(raw: &[u8]) -> Option<(u16, i16, i8, bool)> {
+    if raw.len() < 7 { return None; }
+    if crc8_maxim(&raw[0..6]) != raw[6] { return None; }
+    Some((
+        u16::from_le_bytes([raw[0], raw[1]]),
+        i16::from_le_bytes([raw[2], raw[3]]),
+        raw[4] as i8,
+        raw[5] != 0,
     ))
 }

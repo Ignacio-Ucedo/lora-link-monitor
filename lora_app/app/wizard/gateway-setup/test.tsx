@@ -126,21 +126,37 @@ function IdleView({
 
 // ─── Running phase ────────────────────────────────────────────────────────────
 
+const NO_PACKET_WARN_S = 12;
+const AMBER = "#d3b64f";
+
 function RunningView({
   elapsed,
   duration,
   liveStats,
+  lastTestPacketTs,
   onStop,
 }: {
   elapsed: number;
   duration: number;
   liveStats: SessionStatistics;
+  lastTestPacketTs: number | null;
   onStop: () => void;
 }) {
   const theme = useTheme();
   const progress = elapsed / duration;
   const pdrColor =
-    liveStats.pdr >= 95 ? theme.green : liveStats.pdr >= 85 ? "#d3b64f" : theme.red;
+    liveStats.pdr >= 95 ? theme.green : liveStats.pdr >= 85 ? AMBER : theme.red;
+
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const sinceLastS = lastTestPacketTs !== null
+    ? Math.floor((now - lastTestPacketTs) / 1000)
+    : elapsed; // no packet at all yet → use elapsed as gap
+  const showGapWarning = sinceLastS >= NO_PACKET_WARN_S;
 
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
@@ -174,6 +190,17 @@ function RunningView({
           value={liveStats.metrics ? `${liveStats.metrics.snrAvg.toFixed(1)} dB` : "—"}
         />
       </ThemedCard>
+
+      {showGapWarning && (
+        <ThemedCard gap={6} style={{ borderLeftWidth: 3, borderLeftColor: AMBER }}>
+          <ThemedText style={{ color: AMBER, fontWeight: "600", fontSize: 13 }}>
+            Sin paquetes hace {sinceLastS} s
+          </ThemedText>
+          <ThemedText style={{ color: theme.text, fontSize: 12, lineHeight: 18 }}>
+            Verificá que el nodo esté encendido y que el gateway siga conectado por BLE.
+          </ThemedText>
+        </ThemedCard>
+      )}
 
       <AppButton onPress={onStop} backgroundColor={theme.red} style={styles.mainBtn}>
         <ThemedText color="#fff" style={{ fontWeight: "bold", letterSpacing: 1 }}>
@@ -272,6 +299,12 @@ export default function LinkTestScreen() {
   const packetsRef = useRef(packets);
   useEffect(() => { packetsRef.current = packets; }, [packets]);
 
+  // Most recent packet timestamp within the current test window
+  const lastTestPacketTs = useMemo<number | null>(() => {
+    if (phase !== "running" || startTime === null) return null;
+    return packets.find((p) => p.timestamp >= startTime)?.timestamp ?? null;
+  }, [phase, startTime, packets]);
+
   // Live stats derived from session packets during the test window
   const liveStats = useMemo<SessionStatistics>(() => {
     if (phase !== "running" || startTime === null) return emptyStats;
@@ -329,7 +362,13 @@ export default function LinkTestScreen() {
         <IdleView duration={duration} onSelectDuration={setDuration} onStart={startTest} />
       )}
       {phase === "running" && (
-        <RunningView elapsed={elapsed} duration={duration} liveStats={liveStats} onStop={stopTest} />
+        <RunningView
+          elapsed={elapsed}
+          duration={duration}
+          liveStats={liveStats}
+          lastTestPacketTs={lastTestPacketTs}
+          onStop={stopTest}
+        />
       )}
       {phase === "done" && result && (
         <DoneView result={result.stats} actualDuration={result.duration} onReset={reset} />

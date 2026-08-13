@@ -12,6 +12,13 @@ fn main() {
 
     let inc = vendor.join("src");
     let mut cc = cc::Build::new();
+
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if target.contains("xtensa-esp32") {
+        cc.compiler("xtensa-esp32-elf-gcc")
+          .flag("-mlongcalls");
+    }
+
     cc.include(&inc)
         .include(inc.join("common"))
         .flag_if_supported("-Wno-unused-parameter");

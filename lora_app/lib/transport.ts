@@ -1,18 +1,38 @@
-import { Packet, RadioConfig } from "./models";
+import { AckPayload, RadioConfig, DEFAULT_RADIO_CONFIG } from "./models";
 import { BLE_PROTOCOL } from "./protocol";
 
-export type PacketCallback = (p: Packet) => void;
+export type PacketCallback = (p: import("./models").Packet) => void;
+export type AckCallback = (ack: AckPayload) => void;
 export type ConfigAckCallback = (success: boolean) => void;
+
+// ─── Gateway transport ────────────────────────────────────────────────────────
 
 export interface ITransport {
   readonly id: string;
   start(onPacket: PacketCallback): void;
   stop(): void;
   applyRadioConfig(config: RadioConfig, onAck: ConfigAckCallback): void;
-  getDeviceInfo(): Promise<{ name: string; firmware: string }>;
+  getDeviceInfo(): Promise<{ name: string; firmware: string; role?: string }>;
+  sendDeviceName(name: string, onAck: ConfigAckCallback): void;
+  sendWifiCredentials(ssid: string, password: string, onAck: ConfigAckCallback): void;
 }
 
-// ─── Mock Transport ───────────────────────────────────────────────────────────
+// ─── Node transport ───────────────────────────────────────────────────────────
+
+export interface INodeTransport {
+  readonly id: string;
+  start(onAck: AckCallback): void;
+  stop(): void;
+  readRadioConfig(): Promise<RadioConfig>;
+  writeRadioConfig(config: RadioConfig, onAck: ConfigAckCallback): void;
+  getDeviceInfo(): Promise<{ name: string; firmware: string; role?: string }>;
+  pauseTx(): void;
+  resumeTx(): void;
+  sendOne(): void;
+  setTxInterval(ms: number): void;
+}
+
+// ─── Mock Gateway Transport ───────────────────────────────────────────────────
 
 const MOCK_RSSI_BASE = -70;
 const MOCK_SNR_BASE = 7;
@@ -58,17 +78,108 @@ export class MockTransport implements ITransport {
   }
 
   async getDeviceInfo() {
-    return { name: "MockNode-001", firmware: "mock-v1.0.0" };
+    return { name: "MockGateway-001", firmware: "mock-v1.0.0", role: "gateway" };
+  }
+
+  sendDeviceName(_name: string, onAck: ConfigAckCallback) {
+    setTimeout(() => onAck(true), 400);
+  }
+
+  sendWifiCredentials(_ssid: string, _password: string, onAck: ConfigAckCallback) {
+    setTimeout(() => onAck(true), 600);
   }
 }
 
-// ─── BLE Transport ────────────────────────────────────────────────────────────
-// Requires real ESP32 firmware with matching GATT profile (see lib/protocol.ts).
+// ─── Mock Node Transport ──────────────────────────────────────────────────────
+
+const MOCK_NODE_GW_RSSI = -76;
+const MOCK_NODE_GW_SNR = 5.5;
+const MOCK_NODE_LOSS_PROB = 0.08;
+
+export class MockNodeTransport implements INodeTransport {
+  readonly id = "mock-node";
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private onAckRef: AckCallback | null = null;
+  private seq = 1;
+  private intervalMs = MOCK_INTERVAL_MS;
+  private running = false;
+
+  start(onAck: AckCallback) {
+    this.stop();
+    this.seq = 1;
+    this.onAckRef = onAck;
+    this.running = true;
+    this._startTimer();
+  }
+
+  private _startTimer() {
+    if (this.timer !== null) clearInterval(this.timer);
+    if (!this.running || !this.onAckRef) return;
+    const cb = this.onAckRef;
+    this.timer = setInterval(() => {
+      if (Math.random() < MOCK_NODE_LOSS_PROB) return;
+      cb({
+        seqAck: this.seq++,
+        rssiGw: +(MOCK_NODE_GW_RSSI + (Math.random() * 8 - 4)).toFixed(1),
+        snrGw: +(MOCK_NODE_GW_SNR + (Math.random() * 3 - 1.5)).toFixed(1),
+        delivered: true,
+      });
+    }, this.intervalMs);
+  }
+
+  stop() {
+    if (this.timer !== null) { clearInterval(this.timer); this.timer = null; }
+    this.running = false;
+    this.onAckRef = null;
+  }
+
+  pauseTx() {
+    this.running = false;
+    if (this.timer !== null) { clearInterval(this.timer); this.timer = null; }
+  }
+
+  resumeTx() {
+    this.running = true;
+    this._startTimer();
+  }
+
+  sendOne() {
+    if (!this.onAckRef) return;
+    const cb = this.onAckRef;
+    setTimeout(() => {
+      cb({
+        seqAck: this.seq++,
+        rssiGw: +(MOCK_NODE_GW_RSSI + (Math.random() * 8 - 4)).toFixed(1),
+        snrGw: +(MOCK_NODE_GW_SNR + (Math.random() * 3 - 1.5)).toFixed(1),
+        delivered: true,
+      });
+    }, 400);
+  }
+
+  setTxInterval(ms: number) {
+    this.intervalMs = ms;
+    if (this.running) this._startTimer();
+  }
+
+  async readRadioConfig(): Promise<RadioConfig> {
+    return { ...DEFAULT_RADIO_CONFIG };
+  }
+
+  writeRadioConfig(_config: RadioConfig, onAck: ConfigAckCallback) {
+    setTimeout(() => onAck(true), 400);
+  }
+
+  async getDeviceInfo() {
+    return { name: "MockNode-TX-001", firmware: "mock-v1.0.0", role: "node" };
+  }
+}
+
+// ─── BLE Gateway Transport ────────────────────────────────────────────────────
 
 import { Device } from "react-native-ble-plx";
 
-export class BleTransport implements ITransport {
-  readonly id = "ble";
+export class GatewayBleTransport implements ITransport {
+  readonly id = "ble-gateway";
   private subscription: { remove(): void } | null = null;
 
   constructor(private device: Device) {}
@@ -126,7 +237,130 @@ export class BleTransport implements ITransport {
       );
       return JSON.parse(atob(c.value ?? ""));
     } catch {
-      return { name: this.device.name ?? "Unknown", firmware: "unknown" };
+      return { name: this.device.name ?? "Unknown", firmware: "unknown", role: "gateway" };
     }
   }
+
+  sendDeviceName(name: string, onAck: ConfigAckCallback) {
+    const payload = btoa(JSON.stringify({ cmd: "SET_DEVICE_NAME", name }));
+    this.device
+      .writeCharacteristicWithResponseForService(
+        BLE_PROTOCOL.SERVICE_UUID,
+        BLE_PROTOCOL.CHAR_COMMAND,
+        payload,
+      )
+      .then(() => onAck(true))
+      .catch(() => onAck(false));
+  }
+
+  sendWifiCredentials(ssid: string, password: string, onAck: ConfigAckCallback) {
+    const payload = btoa(JSON.stringify({ cmd: "SET_WIFI_CREDENTIALS", ssid, password }));
+    this.device
+      .writeCharacteristicWithResponseForService(
+        BLE_PROTOCOL.SERVICE_UUID,
+        BLE_PROTOCOL.CHAR_COMMAND,
+        payload,
+      )
+      .then(() => onAck(true))
+      .catch(() => onAck(false));
+  }
+}
+
+// Backward-compat alias — prefer GatewayBleTransport in new code.
+export { GatewayBleTransport as BleTransport };
+
+// ─── BLE Node Transport ───────────────────────────────────────────────────────
+
+export class NodeBleTransport implements INodeTransport {
+  readonly id = "ble-node";
+  readonly bleDeviceId: string;
+  private subscription: { remove(): void } | null = null;
+
+  constructor(private device: Device) {
+    this.bleDeviceId = device.id;
+  }
+
+  onDisconnect(cb: () => void): void {
+    this.device.onDisconnected(() => cb());
+  }
+
+  start(onAck: AckCallback) {
+    this.stop();
+    this.subscription = this.device.monitorCharacteristicForService(
+      BLE_PROTOCOL.SERVICE_UUID,
+      BLE_PROTOCOL.CHAR_ACK_RX,
+      (_err, char) => {
+        if (!char?.value) return;
+        try {
+          onAck(JSON.parse(atob(char.value)));
+        } catch {}
+      },
+    );
+  }
+
+  stop() {
+    this.subscription?.remove();
+    this.subscription = null;
+    this.device.cancelConnection().catch(() => {});
+  }
+
+  async readRadioConfig(): Promise<RadioConfig> {
+    const c = await this.device.readCharacteristicForService(
+      BLE_PROTOCOL.SERVICE_UUID,
+      BLE_PROTOCOL.CHAR_RADIO_CONFIG,
+    );
+    return JSON.parse(atob(c.value ?? ""));
+  }
+
+  writeRadioConfig(config: RadioConfig, onAck: ConfigAckCallback) {
+    const payload = btoa(JSON.stringify({ cmd: "SET_RADIO_CONFIG", ...config }));
+    this.device
+      .writeCharacteristicWithResponseForService(
+        BLE_PROTOCOL.SERVICE_UUID,
+        BLE_PROTOCOL.CHAR_COMMAND,
+        payload,
+      )
+      .then(() =>
+        this.device.readCharacteristicForService(
+          BLE_PROTOCOL.SERVICE_UUID,
+          BLE_PROTOCOL.CHAR_RADIO_STATUS,
+        ),
+      )
+      .then((c) => {
+        try {
+          const { success } = JSON.parse(atob(c.value ?? ""));
+          onAck(success === true);
+        } catch {
+          onAck(false);
+        }
+      })
+      .catch(() => onAck(false));
+  }
+
+  async getDeviceInfo() {
+    try {
+      const c = await this.device.readCharacteristicForService(
+        BLE_PROTOCOL.SERVICE_UUID,
+        BLE_PROTOCOL.CHAR_DEVICE_INFO,
+      );
+      return JSON.parse(atob(c.value ?? ""));
+    } catch {
+      return { name: this.device.name ?? "Unknown", firmware: "unknown", role: "node" };
+    }
+  }
+
+  private sendCommand(cmd: string, extra?: object) {
+    this.device
+      .writeCharacteristicWithoutResponseForService(
+        BLE_PROTOCOL.SERVICE_UUID,
+        BLE_PROTOCOL.CHAR_COMMAND,
+        btoa(JSON.stringify({ cmd, ...extra })),
+      )
+      .catch(() => {});
+  }
+
+  pauseTx()                  { this.sendCommand("PAUSE_TX"); }
+  resumeTx()                 { this.sendCommand("RESUME_TX"); }
+  sendOne()                  { this.sendCommand("SEND_ONE"); }
+  setTxInterval(ms: number)  { this.sendCommand("SET_TX_INTERVAL", { intervalMs: ms }); }
 }

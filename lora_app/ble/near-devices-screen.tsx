@@ -11,7 +11,7 @@ import { scanForDevices, connectToDevice } from "@/ble/ble-manager";
 import { saveKnownDevice } from "@/ble/device-storage";
 import { useSession } from "@/hooks/session-context";
 import { useTheme } from "@/hooks/use-theme";
-import { BleTransport } from "@/lib/transport";
+import { GatewayBleTransport } from "@/lib/transport";
 
 type FoundDevice = { id: string; name: string; rssi: number };
 
@@ -78,7 +78,7 @@ export default function NearDevicesScreen({
     try {
       const connected = await connectToDevice(device.id);
       await saveKnownDevice(device);
-      switchToBle(new BleTransport(connected));
+      switchToBle(new GatewayBleTransport(connected));
       onConnected();
     } catch {
       setConnectError(`No se pudo conectar a ${device.name}`);
