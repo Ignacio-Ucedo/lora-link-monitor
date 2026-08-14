@@ -24,7 +24,7 @@ type GpsState = "idle" | "acquiring" | "ok" | "error";
 export default function GatewayIdentifyScreen() {
   const theme = useTheme();
   const { goTo, state, setGatewayName, setGatewayGps, setGatewayWifi } = useCommissioning();
-  const { applyDeviceName, applyWifiCredentials } = useSession();
+  const { applyDeviceName, applyWifiCredentials, switchToMock } = useSession();
   useWizardBack("gateway_setup", "/wizard/gateway-setup");
 
   const [name, setName] = useState(state.gatewayName ?? "");
@@ -90,6 +90,11 @@ export default function GatewayIdentifyScreen() {
 
   const handleNext = () => {
     if (location) setGatewayGps(location);
+    // El resto del wizard no necesita la sesión BLE del gateway (el nodo
+    // recibe RSSI/SNR del gateway via ACK downlink LoRa, no por BLE), y
+    // mantenerla abierta compite por el radio del teléfono con el scan
+    // del nodo. La soltamos acá.
+    switchToMock();
     goTo("node_connect");
     router.push("/wizard/node-connect");
   };
