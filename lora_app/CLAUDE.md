@@ -273,18 +273,29 @@ Para pasar a BLE real: `connectNode(new NodeBleTransport(device))` desde `node-c
 
 ---
 
-## Firmware — compilar
+## Firmware — compilar y flashear
+
+Usar el script `./flash` desde la raíz del repo:
 
 ```bash
-cd ../lora_firmware/lora-rx   # o lora-tx
-cargo build --release
-espflash flash --monitor target/xtensa-esp32-espidf/release/lora-rx
+./flash gw               # compila lora-rx (gateway) y flashea
+./flash node             # compila lora-tx (nodo) y flashea
+./flash gw --port /dev/ttyUSB0   # puerto explícito
+./flash node --no-build          # solo flashear (sin recompilar)
 ```
 
+El script carga `~/.espup/export-esp.sh` automáticamente.
+
 Requiere:
-- `espup` instalado y `~/.espup/export-esp.sh` sourced
+- `espup` instalado (`espup install`) y target `xtensa-esp32-espidf`
 - `espflash` (`cargo install espflash`)
-- Target `xtensa-esp32-espidf` (`espup install`)
+
+Manual (sin script):
+```bash
+cd lora_firmware
+cargo build --release -p lora-rx   # o -p lora-tx
+espflash flash --monitor target/xtensa-esp32-espidf/release/lora-rx
+```
 
 ---
 

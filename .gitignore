@@ -32,6 +32,7 @@ lora_firmware/.embuild/
 .env.local
 *.local.toml
 secrets/
+.dev-config
 
 # OS
 .DS_Store

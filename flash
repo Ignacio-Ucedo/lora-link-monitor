@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# flash — compilar y flashear firmware ESP32 LoRa
+#
+# Uso:
+#   ./flash gw              compilar lora-rx (gateway) y flashear
+#   ./flash node            compilar lora-tx (nodo) y flashear
+#   ./flash gw   --port /dev/ttyUSB0   especificar puerto serie
+#   ./flash node --no-build             solo flashear (sin recompilar)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FW_DIR="$SCRIPT_DIR/lora_firmware"
+TARGET="xtensa-esp32-espidf"
+
+R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' D='\033[0;90m' BOLD='\033[1m' NC='\033[0m'
+step() { echo -e "\n${BOLD}${B}▶  $*${NC}"; }
+ok()   { echo -e "${G}✓  $*${NC}"; }
+warn() { echo -e "${Y}⚠  $*${NC}"; }
+err()  { echo -e "${R}✗  $*${NC}"; exit 1; }
+
+# ── argumentos ────────────────────────────────────────────────────────────────
+TARGET_ARG="${1:-}"
+PORT=""
+NO_BUILD=false
+
+shift || true
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --port)     PORT="$2"; shift ;;
+    --no-build) NO_BUILD=true ;;
+    *) warn "Opción desconocida: $1" ;;
+  esac
+  shift
+done
+
+case "$TARGET_ARG" in
+  gw|rx|gateway)
+    CRATE_DIR="$FW_DIR/lora-rx"
+    BINARY="lora-rx"
+    LABEL="Gateway (lora-rx)"
+    ;;
+  node|tx|nodo)
+    CRATE_DIR="$FW_DIR/lora-tx"
+    BINARY="lora-tx"
+    LABEL="Nodo (lora-tx)"
+    ;;
+  "")
+    err "Uso: ./flash gw|node [--port /dev/ttyUSBx] [--no-build]"
+    ;;
+  *)
+    err "Target desconocido: '$TARGET_ARG'. Usá 'gw' o 'node'."
+    ;;
+esac
+
+ELF="$FW_DIR/target/$TARGET/release/$BINARY"
+
+echo -e "\n${BOLD}━━━ Flash $LABEL ━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# ── entorno ESP-IDF ───────────────────────────────────────────────────────────
+ESP_ENV="$HOME/.espup/export-esp.sh"
+if [[ -f "$ESP_ENV" ]]; then
+  # shellcheck source=/dev/null
+  source "$ESP_ENV"
+  ok "Entorno ESP cargado"
+else
+  warn "No se encontró $ESP_ENV — asegurate de tener espup instalado"
+fi
+
+# ── build ─────────────────────────────────────────────────────────────────────
+if [[ "$NO_BUILD" == false ]]; then
+  step "Compilando $LABEL"
+  (cd "$CRATE_DIR" && cargo build --release)
+  ok "Build completado: $ELF"
+else
+  [[ -f "$ELF" ]] || err "ELF no encontrado: $ELF  (compilá primero sin --no-build)"
+  warn "Saltando compilación (--no-build)"
+fi
+
+# ── flash ─────────────────────────────────────────────────────────────────────
+step "Flasheando"
+
+FLASH_ARGS=("flash" "--monitor" "$ELF")
+if [[ -n "$PORT" ]]; then
+  FLASH_ARGS+=("--port" "$PORT")
+fi
+
+command -v espflash &>/dev/null || err "espflash no encontrado. Instalalo con: cargo install espflash"
+
+espflash "${FLASH_ARGS[@]}"
