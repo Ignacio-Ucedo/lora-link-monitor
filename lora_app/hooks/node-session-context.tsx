@@ -11,6 +11,7 @@ import {
 import type { AckPayload, RadioConfig } from "@/lib/models";
 import { INodeTransport, MockNodeTransport, NodeBleTransport, ConfigAckCallback } from "@/lib/transport";
 import { connectToDevice } from "@/ble/ble-manager";
+import { logger } from "@/lib/logger";
 
 export type NodeAckStatus = "idle" | "pending" | "ok" | "error";
 
@@ -78,6 +79,7 @@ export function NodeSessionProvider({ children }: { children: ReactNode }) {
     if (reconnectingRef.current) return;
     reconnectingRef.current = true;
     setReconnecting(true);
+    logger.warn("SESSION-NODE", "nodo BLE desconectado, iniciando reconexión", { deviceId });
 
     // Fall back to mock so the rest of the UI stays alive
     transportRef.current.stop();
@@ -86,8 +88,11 @@ export function NodeSessionProvider({ children }: { children: ReactNode }) {
     mock.start(onAck);
     setMode("mock");
 
+    let attempt_n = 0;
     const attempt = async () => {
       if (!reconnectingRef.current) return;
+      attempt_n++;
+      logger.info("SESSION-NODE", `reconexión intento #${attempt_n}`, { deviceId });
       try {
         const device = await connectToDevice(deviceId);
         if (!reconnectingRef.current) {
@@ -101,11 +106,11 @@ export function NodeSessionProvider({ children }: { children: ReactNode }) {
         t.start(onAck);
         t.onDisconnect(() => handleDisconnect(deviceId));
         setMode("ble");
-        setLastAck(null);
-        setLastAckTs(null);
         reconnectingRef.current = false;
         setReconnecting(false);
-      } catch {
+        logger.info("SESSION-NODE", `reconexión exitosa en intento #${attempt_n}`, { deviceId });
+      } catch (e) {
+        logger.warn("SESSION-NODE", `reconexión fallida en intento #${attempt_n}`, { deviceId, error: (e as Error)?.message ?? String(e) });
         if (reconnectingRef.current) {
           setTimeout(attempt, RECONNECT_RETRY_DELAY_MS);
         }
@@ -119,6 +124,7 @@ export function NodeSessionProvider({ children }: { children: ReactNode }) {
 
   const connectNode = useCallback(
     async (transport: INodeTransport) => {
+      logger.info("SESSION-NODE", "connectNode llamado", { transportId: transport.id });
       // Cancel any in-flight reconnect
       reconnectingRef.current = false;
       setReconnecting(false);

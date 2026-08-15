@@ -177,6 +177,7 @@ export class MockNodeTransport implements INodeTransport {
 // ─── BLE Gateway Transport ────────────────────────────────────────────────────
 
 import { Device } from "react-native-ble-plx";
+import { logger } from "./logger";
 
 export class GatewayBleTransport implements ITransport {
   readonly id = "ble-gateway";
@@ -185,7 +186,9 @@ export class GatewayBleTransport implements ITransport {
   constructor(private device: Device) {}
 
   start(onPacket: PacketCallback) {
-    this.stop();
+    this.subscription?.remove();
+    this.subscription = null;
+    logger.info("BLE-GW", "monitor iniciado", { device: this.device.name ?? this.device.id });
     this.subscription = this.device.monitorCharacteristicForService(
       BLE_PROTOCOL.SERVICE_UUID,
       BLE_PROTOCOL.CHAR_PACKET_RX,
@@ -199,6 +202,7 @@ export class GatewayBleTransport implements ITransport {
   }
 
   stop() {
+    logger.info("BLE-GW", "transport detenido, cancelando conexión");
     this.subscription?.remove();
     this.subscription = null;
     this.device.cancelConnection().catch(() => {});
@@ -206,27 +210,34 @@ export class GatewayBleTransport implements ITransport {
 
   applyRadioConfig(config: RadioConfig, onAck: ConfigAckCallback) {
     const payload = btoa(JSON.stringify({ cmd: "SET_RADIO_CONFIG", ...config }));
+    logger.info("BLE-GW", "applyRadioConfig: escribiendo config", config);
     this.device
       .writeCharacteristicWithResponseForService(
         BLE_PROTOCOL.SERVICE_UUID,
         BLE_PROTOCOL.CHAR_COMMAND,
         payload,
       )
-      .then(() =>
-        this.device.readCharacteristicForService(
+      .then(() => {
+        logger.debug("BLE-GW", "applyRadioConfig: write ok, leyendo status...");
+        return this.device.readCharacteristicForService(
           BLE_PROTOCOL.SERVICE_UUID,
           BLE_PROTOCOL.CHAR_RADIO_STATUS,
-        ),
-      )
+        );
+      })
       .then((c) => {
         try {
-          const { success } = JSON.parse(atob(c.value ?? ""));
-          onAck(success === true);
-        } catch {
+          const parsed = JSON.parse(atob(c.value ?? ""));
+          logger.info("BLE-GW", "applyRadioConfig: respuesta firmware", parsed);
+          onAck(parsed.success === true);
+        } catch (e) {
+          logger.error("BLE-GW", "applyRadioConfig: error parseando status", { error: String(e), raw: c.value });
           onAck(false);
         }
       })
-      .catch(() => onAck(false));
+      .catch((e: unknown) => {
+        logger.error("BLE-GW", "applyRadioConfig: error BLE", { error: (e as Error)?.message ?? String(e) });
+        onAck(false);
+      });
   }
 
   async getDeviceInfo() {
@@ -242,6 +253,7 @@ export class GatewayBleTransport implements ITransport {
   }
 
   sendDeviceName(name: string, onAck: ConfigAckCallback) {
+    logger.info("BLE-GW", "sendDeviceName", { name });
     const payload = btoa(JSON.stringify({ cmd: "SET_DEVICE_NAME", name }));
     this.device
       .writeCharacteristicWithResponseForService(
@@ -249,11 +261,12 @@ export class GatewayBleTransport implements ITransport {
         BLE_PROTOCOL.CHAR_COMMAND,
         payload,
       )
-      .then(() => onAck(true))
-      .catch(() => onAck(false));
+      .then(() => { logger.info("BLE-GW", "sendDeviceName: ok"); onAck(true); })
+      .catch((e: unknown) => { logger.error("BLE-GW", "sendDeviceName: error", { error: (e as Error)?.message ?? String(e) }); onAck(false); });
   }
 
   sendWifiCredentials(ssid: string, password: string, onAck: ConfigAckCallback) {
+    logger.info("BLE-GW", "sendWifiCredentials", { ssid });
     const payload = btoa(JSON.stringify({ cmd: "SET_WIFI_CREDENTIALS", ssid, password }));
     this.device
       .writeCharacteristicWithResponseForService(
@@ -261,8 +274,8 @@ export class GatewayBleTransport implements ITransport {
         BLE_PROTOCOL.CHAR_COMMAND,
         payload,
       )
-      .then(() => onAck(true))
-      .catch(() => onAck(false));
+      .then(() => { logger.info("BLE-GW", "sendWifiCredentials: ok"); onAck(true); })
+      .catch((e: unknown) => { logger.error("BLE-GW", "sendWifiCredentials: error", { error: (e as Error)?.message ?? String(e) }); onAck(false); });
   }
 }
 
@@ -275,21 +288,30 @@ export class NodeBleTransport implements INodeTransport {
   readonly id = "ble-node";
   readonly bleDeviceId: string;
   private subscription: { remove(): void } | null = null;
+  private disconnectSubscription: { remove(): void } | null = null;
 
   constructor(private device: Device) {
     this.bleDeviceId = device.id;
   }
 
   onDisconnect(cb: () => void): void {
-    this.device.onDisconnected(() => cb());
+    this.disconnectSubscription?.remove();
+    logger.debug("BLE-NODE", "registrando handler de desconexión", { deviceId: this.bleDeviceId });
+    this.disconnectSubscription = this.device.onDisconnected((_err) => {
+      logger.warn("BLE-NODE", "device disconnected", { deviceId: this.bleDeviceId, error: (_err as Error)?.message });
+      cb();
+    });
   }
 
   start(onAck: AckCallback) {
-    this.stop();
+    this.subscription?.remove();
+    this.subscription = null;
+    logger.info("BLE-NODE", "monitor ACK iniciado", { deviceId: this.bleDeviceId });
     this.subscription = this.device.monitorCharacteristicForService(
       BLE_PROTOCOL.SERVICE_UUID,
       BLE_PROTOCOL.CHAR_ACK_RX,
-      (_err, char) => {
+      (err, char) => {
+        if (err) { logger.warn("BLE-NODE", "error en monitor ACK", { error: (err as Error)?.message }); return; }
         if (!char?.value) return;
         try {
           onAck(JSON.parse(atob(char.value)));
@@ -299,6 +321,9 @@ export class NodeBleTransport implements INodeTransport {
   }
 
   stop() {
+    logger.info("BLE-NODE", "transport detenido", { deviceId: this.bleDeviceId });
+    this.disconnectSubscription?.remove();
+    this.disconnectSubscription = null;
     this.subscription?.remove();
     this.subscription = null;
     this.device.cancelConnection().catch(() => {});
@@ -314,27 +339,34 @@ export class NodeBleTransport implements INodeTransport {
 
   writeRadioConfig(config: RadioConfig, onAck: ConfigAckCallback) {
     const payload = btoa(JSON.stringify({ cmd: "SET_RADIO_CONFIG", ...config }));
+    logger.info("BLE-NODE", "writeRadioConfig: escribiendo config", config);
     this.device
       .writeCharacteristicWithResponseForService(
         BLE_PROTOCOL.SERVICE_UUID,
         BLE_PROTOCOL.CHAR_COMMAND,
         payload,
       )
-      .then(() =>
-        this.device.readCharacteristicForService(
+      .then(() => {
+        logger.debug("BLE-NODE", "writeRadioConfig: write ok, leyendo status...");
+        return this.device.readCharacteristicForService(
           BLE_PROTOCOL.SERVICE_UUID,
           BLE_PROTOCOL.CHAR_RADIO_STATUS,
-        ),
-      )
+        );
+      })
       .then((c) => {
         try {
-          const { success } = JSON.parse(atob(c.value ?? ""));
-          onAck(success === true);
-        } catch {
+          const parsed = JSON.parse(atob(c.value ?? ""));
+          logger.info("BLE-NODE", "writeRadioConfig: respuesta firmware", parsed);
+          onAck(parsed.success === true);
+        } catch (e) {
+          logger.error("BLE-NODE", "writeRadioConfig: error parseando status", { error: String(e) });
           onAck(false);
         }
       })
-      .catch(() => onAck(false));
+      .catch((e: unknown) => {
+        logger.error("BLE-NODE", "writeRadioConfig: error BLE", { error: (e as Error)?.message ?? String(e) });
+        onAck(false);
+      });
   }
 
   async getDeviceInfo() {

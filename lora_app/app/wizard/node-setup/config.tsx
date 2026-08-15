@@ -99,17 +99,19 @@ export default function NodeConfigScreen() {
   };
 
   const isInSync = gwConfig
-    ? sf === gwConfig.sf && bw === gwConfig.bwKhz && cr === gwConfig.cr
+    ? sf === gwConfig.sf && bw === gwConfig.bwKhz && cr === gwConfig.cr && base.freqHz === gwConfig.freqHz
     : null;
 
   const diffs: string[] = gwConfig ? [
+    base.freqHz !== gwConfig.freqHz ? `Freq: nodo ${(base.freqHz / 1_000_000).toFixed(3)} MHz → gateway ${(gwConfig.freqHz / 1_000_000).toFixed(3)} MHz` : "",
     sf !== gwConfig.sf   ? `SF: nodo SF${sf} → gateway SF${gwConfig.sf}` : "",
     bw !== gwConfig.bwKhz ? `BW: nodo ${bw} kHz → gateway ${gwConfig.bwKhz} kHz` : "",
     cr !== gwConfig.cr   ? `CR: nodo ${cr} → gateway ${gwConfig.cr}` : "",
   ].filter(Boolean) : [];
 
   const handleApply = () => {
-    const config: RadioConfig = { freqHz: base.freqHz, sf, bwKhz: bw, cr, txPowerDbm: tx };
+    const freqHz = gwConfig?.freqHz ?? base.freqHz;
+    const config: RadioConfig = { freqHz, sf, bwKhz: bw, cr, txPowerDbm: tx };
     applyNodeConfig(config, (ok) => {
       if (ok) {
         setNodeConfig(config);
