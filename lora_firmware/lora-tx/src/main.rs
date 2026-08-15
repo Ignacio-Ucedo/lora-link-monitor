@@ -96,7 +96,7 @@ impl Default for TxState {
 // ─── BLE helpers ──────────────────────────────────────────────────────────────
 
 fn b64_json<T: Serialize>(v: &T) -> Vec<u8> {
-    base64::encode(serde_json::to_string(v).unwrap_or_default()).into_bytes()
+    serde_json::to_string(v).unwrap_or_default().into_bytes()
 }
 
 fn decode_b64_json(data: &[u8]) -> Option<String> {
