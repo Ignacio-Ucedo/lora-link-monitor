@@ -22,9 +22,9 @@ pub const DEFAULT_TX_DBM: i8 = 14;
 
 // ─── IRQ masks ────────────────────────────────────────────────────────────────
 
-const IRQ_TX_DONE: u32 = 1 << 2;  // 0x04
-const IRQ_RX_DONE: u32 = 1 << 3;  // 0x08
-const IRQ_CRC_ERR: u32 = 1 << 7;  // 0x80
+const IRQ_TX_DONE: u32 = 1 << 2;  // 0x004
+const IRQ_RX_DONE: u32 = 1 << 3;  // 0x008
+const IRQ_ERR:     u32 = 1 << 7;  // 0x080  — general error (PA fault, CRC, header err…)
 const IRQ_TIMEOUT: u32 = 1 << 10; // 0x400
 
 // ─── Tipos públicos ───────────────────────────────────────────────────────────
@@ -104,8 +104,17 @@ pub unsafe extern "C" fn lr11xx_hal_read(
     let cmd = core::slice::from_raw_parts(command, command_length as usize);
     if ctx.spi.write(cmd).is_err() { return 1; }
     if !wait_busy_low() { return 2; }
-    let rx = core::slice::from_raw_parts_mut(data, data_length as usize);
-    if ctx.spi.read(rx).is_err() { return 1; }
+    // The LR11xx SPI read response always starts with one STAT1 byte before the actual data.
+    // We must read data_length+1 bytes in a single CS assertion and discard STAT1 (index 0).
+    // Reading only data_length bytes would cause every response to be shifted by one byte,
+    // making IRQ status, version, and all other reads return wrong values.
+    let total = data_length as usize + 1;
+    let mut buf = vec![0u8; total];
+    if ctx.spi.read(&mut buf).is_err() { return 1; }
+    if data_length > 0 {
+        let rx = core::slice::from_raw_parts_mut(data, data_length as usize);
+        rx.copy_from_slice(&buf[1..]);
+    }
     0
 }
 
@@ -171,7 +180,7 @@ struct Lr11xxSystemVersion {
 
 #[repr(C)]
 struct Lr11xxRadioLoraModParams {
-    sf: u8,   // SpreadingFactor enum value (SF7=0x04 … SF12=0x09)
+    sf: u8,   // SpreadingFactor enum value (SF7=0x07 … SF12=0x0C)
     bw: u8,   // Bandwidth enum value (125k=0x04, 250k=0x05, 500k=0x06)
     cr: u8,   // CodingRate: 4/5=0x01, 4/6=0x02, 4/7=0x03, 4/8=0x04
     ldro: u8, // Low Data Rate Optimization (0=off, 1=on)
@@ -238,7 +247,7 @@ extern "C" {
 
 // ─── Helper: convierte parámetros de la app al formato del driver ─────────────
 
-pub fn sf_to_u8(sf: u8) -> u8 { sf - 7 + 0x04 } // SF7→0x04 … SF12→0x09
+pub fn sf_to_u8(sf: u8) -> u8 { sf } // SF7=0x07 … SF12=0x0C (LR11xx SDK direct mapping)
 
 pub fn bw_khz_to_u8(bw: u32) -> u8 {
     match bw { 250 => 0x05, 500 => 0x06, _ => 0x04 } // default 125 kHz
@@ -279,7 +288,8 @@ impl Lr1121 {
 
         let mut ver = Lr11xxSystemVersion::default();
         unsafe { lr11xx_system_get_version(HAL_CTX as *const _, &mut ver) };
-        debug!("lr1121 fw_type={} fw={:#06x}", ver.chip_firmware_type, ver.fw_version);
+        log::info!("lr1121 chip_type={:#04x} fw_type={} fw={:#06x}",
+            ver.chip_type, ver.chip_firmware_type, ver.fw_version);
 
         Ok(Lr1121 { _ctx: ctx })
     }
@@ -307,8 +317,11 @@ impl Lr1121 {
             };
             check(lr11xx_radio_set_lora_mod_params(HAL_CTX as *const _, &mp))?;
 
-            // PA: HP para sub-GHz hasta +22 dBm
-            let pa = Lr11xxRadioPaCfg { pa_sel: 1, pa_reg_supply: 0, pa_duty_cycle: 4, pa_hp_sel: 7 };
+            // LP PA: sub-GHz 824–928 MHz, VREG supply, up to +14 dBm.
+            // HP PA requires VBAT supply for correct operation; using HP with VREG
+            // triggers PA overcurrent detection, aborting TX and raising IRQ_ERR
+            // instead of IRQ_TX_DONE.
+            let pa = Lr11xxRadioPaCfg { pa_sel: 0, pa_reg_supply: 0, pa_duty_cycle: 4, pa_hp_sel: 0 };
             check(lr11xx_radio_set_pa_cfg(HAL_CTX as *const _, &pa))?;
 
             // TX power + ramp 200 µs (0x02)
@@ -346,6 +359,18 @@ impl Lr1121 {
                 ldro: ldro(sf, bw_khz),
             };
             check(lr11xx_radio_set_lora_mod_params(HAL_CTX as *const _, &mp))?;
+
+            // Packet params must match what the TX side sends:
+            // EXPLICIT header so length/CR/CRC come from the header itself,
+            // CRC ON and STANDARD IQ to match the node's configure_tx settings.
+            let pp = Lr11xxRadioLoraPktParams {
+                preamble_len: 8,
+                header_type: 0,   // EXPLICIT
+                pld_len: 255,     // ignored in EXPLICIT mode; set to max as a safe default
+                crc: 1,           // ON
+                iq: 0,            // STANDARD
+            };
+            check(lr11xx_radio_set_lora_pkt_params(HAL_CTX as *const _, &pp))?;
         }
         Ok(())
     }
@@ -364,13 +389,21 @@ impl Lr1121 {
 
         let deadline_ms = 5_000u32;
         let mut elapsed = 0u32;
+        let mut irq: u32 = 0;
         loop {
             FreeRtos::delay_ms(5);
             elapsed += 5;
-            let mut irq: u32 = 0;
             unsafe { lr11xx_system_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
             if irq & IRQ_TX_DONE != 0 { return Ok(()); }
-            if elapsed >= deadline_ms { return Err(Lr1121Error::TxTimeout); }
+            // PA fault or other error: abort immediately instead of waiting the full 5 s
+            if irq & IRQ_ERR != 0 {
+                warn!("transmit: IRQ_ERR @ {}ms irq={:#010x} (PA fault / overcurrent?)", elapsed, irq);
+                return Err(Lr1121Error::CommandFailed(irq as u8));
+            }
+            if elapsed >= deadline_ms {
+                warn!("transmit: timeout irq={:#010x}", irq);
+                return Err(Lr1121Error::TxTimeout);
+            }
         }
     }
 
@@ -380,8 +413,8 @@ impl Lr1121 {
         let mut irq: u32 = 0;
         unsafe { lr11xx_system_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
 
-        if irq & IRQ_CRC_ERR != 0 {
-            warn!("lr1121: CRC error en paquete recibido");
+        if irq & IRQ_ERR != 0 {
+            warn!("lr1121: error en paquete recibido (CRC/header) irq={:#010x}", irq);
             unsafe { lr11xx_radio_set_rx(HAL_CTX as *const _, 0xFFFFFF) };
             return Err(Lr1121Error::CrcError);
         }
@@ -443,7 +476,7 @@ impl Lr1121 {
             let mut irq: u32 = 0;
             unsafe { lr11xx_system_get_and_clear_irq_status(HAL_CTX as *const _, &mut irq) };
 
-            if irq & (IRQ_CRC_ERR | IRQ_TIMEOUT) != 0 { return Ok(None); }
+            if irq & (IRQ_ERR | IRQ_TIMEOUT) != 0 { return Ok(None); }
 
             if irq & IRQ_RX_DONE != 0 {
                 let mut pkt_st = Lr11xxRadioLoraPacketStatus::default();
