@@ -312,6 +312,13 @@ fn main() {
     // ─── BLE setup ───────────────────────────────────────────────────────────
     let ble = BLEDevice::take();
     let server = ble.get_server();
+    let ble_advertising = ble.get_advertising();
+
+    server.on_disconnect(|_desc, _reason| {
+        ble_advertising.lock().start()
+            .unwrap_or_else(|e| ::log::warn!("ble adv restart: {:?}", e));
+        ::log::info!("BLE: client desconectado — advertising reiniciado");
+    });
 
     let service = server.create_service(SVC);
 
