@@ -314,8 +314,12 @@ export class NodeBleTransport implements INodeTransport {
         if (err) { logger.warn("BLE-NODE", "error en monitor ACK", { error: (err as Error)?.message }); return; }
         if (!char?.value) return;
         try {
-          onAck(JSON.parse(atob(char.value)));
-        } catch {}
+          const ack = JSON.parse(atob(char.value));
+          logger.debug("BLE-NODE", "ACK recibido", { seqAck: ack.seqAck, rssiGw: ack.rssiGw, snrGw: ack.snrGw });
+          onAck(ack);
+        } catch (e) {
+          logger.error("BLE-NODE", "error parseando ACK notify", { error: String(e), raw: char.value });
+        }
       },
     );
   }
