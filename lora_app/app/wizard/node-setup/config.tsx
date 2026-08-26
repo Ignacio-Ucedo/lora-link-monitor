@@ -99,14 +99,13 @@ export default function NodeConfigScreen() {
   };
 
   const isInSync = gwConfig
-    ? sf === gwConfig.sf && bw === gwConfig.bwKhz && cr === gwConfig.cr && base.freqHz === gwConfig.freqHz
+    ? sf === gwConfig.sf && bw === gwConfig.bwKhz && cr === gwConfig.cr
     : null;
 
   const diffs: string[] = gwConfig ? [
-    base.freqHz !== gwConfig.freqHz ? `Freq: nodo ${(base.freqHz / 1_000_000).toFixed(3)} MHz → gateway ${(gwConfig.freqHz / 1_000_000).toFixed(3)} MHz` : "",
-    sf !== gwConfig.sf   ? `SF: nodo SF${sf} → gateway SF${gwConfig.sf}` : "",
+    sf !== gwConfig.sf    ? `SF: nodo SF${sf} → gateway SF${gwConfig.sf}` : "",
     bw !== gwConfig.bwKhz ? `BW: nodo ${bw} kHz → gateway ${gwConfig.bwKhz} kHz` : "",
-    cr !== gwConfig.cr   ? `CR: nodo ${cr} → gateway ${gwConfig.cr}` : "",
+    cr !== gwConfig.cr    ? `CR: nodo ${cr} → gateway ${gwConfig.cr}` : "",
   ].filter(Boolean) : [];
 
   const handleApply = () => {
@@ -142,7 +141,14 @@ export default function NodeConfigScreen() {
             <Separator />
             <View style={styles.activeRow}>
               <ThemedText style={{ color: theme.gray, fontSize: 12 }}>Frecuencia</ThemedText>
-              <ThemedText style={{ fontSize: 13 }}>{(gwConfig.freqHz / 1_000_000).toFixed(3)} MHz</ThemedText>
+              <View style={{ alignItems: "flex-end", gap: 2 }}>
+                <ThemedText style={{ fontSize: 13 }}>{(gwConfig.freqHz / 1_000_000).toFixed(3)} MHz</ThemedText>
+                {base.freqHz !== gwConfig.freqHz && (
+                  <ThemedText style={{ fontSize: 10, color: theme.gray }}>
+                    (nodo en {(base.freqHz / 1_000_000).toFixed(3)} MHz — se corregirá al aplicar)
+                  </ThemedText>
+                )}
+              </View>
             </View>
             <View style={styles.activeRow}>
               <ThemedText style={{ color: theme.gray, fontSize: 12 }}>SF / BW / CR</ThemedText>
