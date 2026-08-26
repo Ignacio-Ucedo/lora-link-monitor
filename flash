@@ -6,6 +6,7 @@
 #   ./flash node            compilar lora-tx (nodo) y flashear
 #   ./flash gw   --port /dev/ttyUSB0   especificar puerto serie
 #   ./flash node --no-build             solo flashear (sin recompilar)
+#   ./flash gw   --monitor-only         solo abrir monitor serie (sin flashear)
 
 set -euo pipefail
 
@@ -23,12 +24,14 @@ err()  { echo -e "${R}✗  $*${NC}"; exit 1; }
 TARGET_ARG="${1:-}"
 PORT=""
 NO_BUILD=false
+MONITOR_ONLY=false
 
 shift || true
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --port)     PORT="$2"; shift ;;
-    --no-build) NO_BUILD=true ;;
+    --port)         PORT="$2"; shift ;;
+    --no-build)     NO_BUILD=true ;;
+    --monitor-only) MONITOR_ONLY=true ;;
     *) warn "Opción desconocida: $1" ;;
   esac
   shift
@@ -77,14 +80,16 @@ else
   warn "Saltando compilación (--no-build)"
 fi
 
-# ── flash ─────────────────────────────────────────────────────────────────────
-step "Flasheando"
-
-FLASH_ARGS=("flash" "--monitor" "$ELF")
-if [[ -n "$PORT" ]]; then
-  FLASH_ARGS+=("--port" "$PORT")
-fi
-
+# ── flash / monitor ───────────────────────────────────────────────────────────
 command -v espflash &>/dev/null || err "espflash no encontrado. Instalalo con: cargo install espflash"
 
-espflash "${FLASH_ARGS[@]}"
+PORT_ARGS=()
+[[ -n "$PORT" ]] && PORT_ARGS+=("--port" "$PORT")
+
+if [[ "$MONITOR_ONLY" == true ]]; then
+  step "Abriendo monitor serie"
+  espflash monitor "${PORT_ARGS[@]}"
+else
+  step "Flasheando"
+  espflash flash --monitor "${PORT_ARGS[@]}" "$ELF"
+fi
