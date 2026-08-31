@@ -1,0 +1,4 @@
+export const DEVICE_NAME = "WeatherStation";
+
+export const SERVICE_UUID = "12340000-1234-1234-1234-123456789abc";
+export const CHARACTERISTIC_UUID = "12340001-1234-1234-1234-123456789abc";

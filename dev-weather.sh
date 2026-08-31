@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# dev.sh — desarrollo de la app LoRa
+# dev-weather.sh — desarrollo de la app WeatherStation
 #
 # Uso:
-#   ./dev.sh                         modo día a día: Metro + hot reload
-#   ./dev.sh --build                 compilar APK nativo + instalar en el teléfono
-#   ./dev.sh --phone-ip <ip:puerto>  IP:puerto del teléfono (se guarda para la próxima)
+#   ./dev-weather.sh          modo día a día: Metro + hot reload
+#   ./dev-weather.sh --build  compilar APK nativo + instalar en el teléfono
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="$SCRIPT_DIR/lora_app"
+APP_DIR="$SCRIPT_DIR/weather_app"
 APK="$APP_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
-PKG="com.anonymous.lora_app"
+PKG="com.anonymous.weather_app"
 CONFIG="$SCRIPT_DIR/.dev-config"
 
 # ── colores ──────────────────────────────────────────────────────────────────
@@ -23,12 +22,10 @@ err()  { echo -e "${R}✗  $*${NC}"; exit 1; }
 
 # ── opciones ─────────────────────────────────────────────────────────────────
 BUILD_MODE=false
-PHONE_IP=""
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --build)     BUILD_MODE=true ;;
-    --phone-ip)  PHONE_IP="$2"; shift ;;
+    --build) BUILD_MODE=true ;;
     *) warn "Opción desconocida: $1" ;;
   esac
   shift
@@ -36,13 +33,13 @@ done
 
 # ── config persistente ────────────────────────────────────────────────────────
 [[ -f "$CONFIG" ]] && source "$CONFIG"
-[[ -z "$PHONE_IP" ]] && PHONE_IP="${PHONE_IP_STORED:-}"
+PHONE_IP="${PHONE_IP_STORED:-}"
 
 save_config() {
   echo "PHONE_IP_STORED=\"$PHONE_IP\"" > "$CONFIG"
 }
 
-# ── configurar Android SDK en el shell actual (no subshell) ──────────────────
+# ── configurar Android SDK ────────────────────────────────────────────────────
 setup_android_sdk() {
   local props="$APP_DIR/android/local.properties"
   local sdk=""
@@ -76,22 +73,21 @@ find_adb() {
 connect_device() {
   local adb="$1"
 
+  # ¿Ya hay un dispositivo conectado?
   if "$adb" devices 2>/dev/null | grep -q "device$"; then
     local dev; dev=$("$adb" devices 2>/dev/null | grep "device$" | head -1 | cut -f1)
     ok "Dispositivo conectado: $dev"
     return 0
   fi
 
-  # Si había una IP guardada, intentarla primero (puede fallar si el puerto cambió)
+  # Intentar con la IP guardada (el puerto cambia cada sesión, puede fallar)
   if [[ -n "$PHONE_IP" ]]; then
-    echo -e "${D}Intentando reconectar a $PHONE_IP...${NC}"
+    echo -e "${D}Reconectando a $PHONE_IP...${NC}"
     if "$adb" connect "$PHONE_IP" 2>/dev/null | grep -q "connected"; then
       ok "Conectado a $PHONE_IP"
-      save_config
       return 0
     fi
-    warn "No se pudo reconectar a $PHONE_IP (el puerto cambia en cada sesión de depuración inalámbrica)"
-    PHONE_IP=""
+    warn "No se pudo reconectar a $PHONE_IP"
   fi
 
   # Pedir IP:puerto actual
@@ -115,7 +111,6 @@ connect_device() {
   echo -ne "${BOLD}Código de vinculación:${NC} "
   read -r PAIR_CODE
 
-  # adb pair puede pedir confirmación interactiva; capturamos la salida para detectar error
   local pair_out
   pair_out=$("$adb" pair "$PAIR_ADDR" "$PAIR_CODE" 2>&1) || true
   echo "$pair_out"
@@ -127,7 +122,7 @@ connect_device() {
 }
 
 # ── main ──────────────────────────────────────────────────────────────────────
-echo -e "\n${BOLD}━━━ LoRa Dev ━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "\n${BOLD}━━━ WeatherStation Dev ━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 # ADB
 setup_android_sdk
@@ -156,19 +151,20 @@ if [[ "$BUILD_MODE" == true ]]; then
   "$ADB" install -r "$APK"
   ok "APK instalado"
 
-  step "Lanzando app"
-  "$ADB" shell am start -n "$PKG/.MainActivity" 2>/dev/null \
-    || "$ADB" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 2>/dev/null \
-    || warn "No se pudo lanzar automáticamente, abrila a mano"
+  # Tunelizar y arrancar Metro (que también lanza la app)
+  if "$ADB" reverse tcp:8081 tcp:8081 2>/dev/null; then
+    ok "Puerto 8081 tuneliado via ADB"
+  else
+    warn "No se pudo tunelizar el puerto 8081 — la app no podrá alcanzar Metro (fetch failed)"
+  fi
 
-  step "Servidor de logs en :9999  (Ctrl+C para salir)"
-  echo -e "${D}Esperando eventos del teléfono...${NC}\n"
+  step "Iniciando Metro"
   cd "$APP_DIR"
-  node scripts/log-server.mjs
+  npx expo start --android --localhost
 
 else
   # ── modo día a día: Metro + hot reload ───────────────────────────────────
-  echo -e "${D}Tip: para compilar APK nativo usá ./dev.sh --build${NC}"
+  echo -e "${D}Tip: para compilar APK nativo usá ./dev-weather.sh --build${NC}"
 
   # Tunelizar Metro a través de ADB para no depender del firewall de la red
   if "$ADB" reverse tcp:8081 tcp:8081 2>/dev/null; then
