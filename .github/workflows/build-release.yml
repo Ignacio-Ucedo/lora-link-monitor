@@ -37,13 +37,13 @@ jobs:
         working-directory: weather_app/android
         run: chmod +x gradlew
 
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: weather_app/android
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Prepare artifacts
         run: |
-          cp weather_app/android/app/build/outputs/apk/debug/app-debug.apk WeatherStation.apk
+          cp weather_app/android/app/build/outputs/apk/release/app-release.apk WeatherStation.apk
           cp weather_firmware/arduino_ide/WeatherStation/WeatherStation.ino WeatherStation.ino
 
       - name: Delete previous latest release
