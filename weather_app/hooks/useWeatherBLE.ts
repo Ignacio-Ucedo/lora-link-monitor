@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { Platform, PermissionsAndroid } from "react-native";
 import { Device, Subscription } from "react-native-ble-plx";
 import {
   scanForWeatherStation,
@@ -15,6 +16,23 @@ export type WeatherData = {
   w: number;
   d: string | null;
 };
+
+async function requestBLEPermissions(): Promise<boolean> {
+  if (Platform.OS !== "android") return true;
+  if (Platform.Version >= 31) {
+    const granted = await PermissionsAndroid.requestMultiple([
+      PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+      PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+    ]);
+    return Object.values(granted).every(
+      (r) => r === PermissionsAndroid.RESULTS.GRANTED,
+    );
+  }
+  const result = await PermissionsAndroid.request(
+    PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+  );
+  return result === PermissionsAndroid.RESULTS.GRANTED;
+}
 
 export function useWeatherBLE() {
   const [status, setStatus] = useState<BLEStatus>("idle");
@@ -50,6 +68,14 @@ export function useWeatherBLE() {
     cleanup();
     setError(null);
     setData(null);
+
+    const granted = await requestBLEPermissions();
+    if (!granted) {
+      setError("Se necesitan permisos de Bluetooth para conectar");
+      setStatus("error");
+      return;
+    }
+
     setStatus("scanning");
 
     let found = false;

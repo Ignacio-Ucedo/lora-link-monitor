@@ -25,12 +25,14 @@ export function scanForWeatherStation(
     return { stop: () => {} };
   }
 
-  manager.startDeviceScan(null, null, (error, device) => {
+  // Filtrar por service UUID en lugar de nombre: en Android el nombre puede
+  // llegar null en scans sin filtro por restricciones de privacidad del SO.
+  manager.startDeviceScan([SERVICE_UUID], null, (error, device) => {
     if (error) {
       onError(error);
       return;
     }
-    if (device?.name === DEVICE_NAME) {
+    if (device) {
       onDevice(device);
     }
   });
