@@ -1,0 +1,71 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build APK & Publish Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: weather_app/package-lock.json
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install dependencies
+        working-directory: weather_app
+        run: npm ci
+
+      - name: Make gradlew executable
+        working-directory: weather_app/android
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        working-directory: weather_app/android
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Prepare artifacts
+        run: |
+          cp weather_app/android/app/build/outputs/apk/debug/app-debug.apk WeatherStation.apk
+          cp weather_firmware/arduino_ide/WeatherStation/WeatherStation.ino WeatherStation.ino
+
+      - name: Delete previous latest release
+        run: gh release delete latest --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "WeatherStation — Latest Build"
+          body: |
+            Compilado automáticamente desde [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}).
+
+            > ${{ github.event.head_commit.message }}
+
+            ---
+
+            **`WeatherStation.apk`** — Instalar en Android (activar *Fuentes desconocidas* si es la primera vez).
+            **`WeatherStation.ino`** — Flashear en el ESP32 con Arduino IDE.
+          files: |
+            WeatherStation.apk
+            WeatherStation.ino
+          make_latest: true
