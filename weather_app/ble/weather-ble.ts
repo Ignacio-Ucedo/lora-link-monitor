@@ -46,7 +46,7 @@ export async function connectToWeatherStation(deviceId: string): Promise<Device>
 
   try { await manager.cancelDeviceConnection(deviceId); } catch {}
 
-  const device = await manager.connectToDevice(deviceId);
+  const device = await manager.connectToDevice(deviceId, { requestMTU: 512 });
   await device.discoverAllServicesAndCharacteristics();
   return device;
 }

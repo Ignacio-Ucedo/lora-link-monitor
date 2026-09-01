@@ -116,6 +116,7 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(PIN_ANEMO), onPulsoAnemo, FALLING);
 
   NimBLEDevice::init("WeatherStation");
+  NimBLEDevice::setMTU(512);
 
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
