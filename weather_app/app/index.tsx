@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Droplets, Wind } from "lucide-react-native";
 import { useWeather } from "@/hooks/WeatherContext";
 import { Reading } from "@/hooks/useWeatherBLE";
+import { localDateKey } from "@/storage/dayStats";
 import { AmbientBackground } from "@/components/AmbientBackground";
 import { Sparkline } from "@/components/Sparkline";
 import { Palette, gradientForTemp } from "@/constants/theme";
@@ -26,12 +27,6 @@ function tempTrend(history: Reading[]): "up" | "down" | null {
   return delta > 0 ? "up" : "down";
 }
 
-function dayMinMax(history: Reading[]): { min: number; max: number } | null {
-  const temps = history.filter((r) => r.t != null).map((r) => r.t as number);
-  if (temps.length === 0) return null;
-  return { min: Math.min(...temps), max: Math.max(...temps) };
-}
-
 function agoLabel(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `hace ${s} s`;
@@ -41,7 +36,7 @@ function agoLabel(ms: number): string {
 }
 
 export default function HomeScreen() {
-  const { status, data, history, lastUpdate, startDemo } = useWeather();
+  const { status, data, history, lastUpdate, dayStats, startDemo } = useWeather();
 
   // Reloj de 1 s para evaluar frescura del dato.
   const [now, setNow] = useState(() => Date.now());
@@ -59,7 +54,9 @@ export default function HomeScreen() {
 
   const gradient = gradientForTemp(!expired && data?.t != null ? data.t : null);
   const trend = useMemo(() => tempTrend(history), [history]);
-  const minMax = useMemo(() => dayMinMax(history), [history]);
+  // Mín/máx persistido, solo si es del día de hoy (ignora acumulados viejos
+  // hasta que la primera lectura de hoy los reinicie).
+  const minMax = dayStats != null && dayStats.date === localDateKey(now) ? dayStats : null;
 
   // Últimas 3 h de temperatura, muestreadas a ~60 puntos para el sparkline.
   const spark = useMemo(() => {
@@ -92,9 +89,9 @@ export default function HomeScreen() {
   const contextParts: string[] = [];
   if (trend === "up") contextParts.push("↑ subiendo");
   if (trend === "down") contextParts.push("↓ bajando");
-  if (minMax && minMax.max - minMax.min >= 0.5) {
-    contextParts.push(`máx ${minMax.max.toFixed(0)}°`);
-    contextParts.push(`mín ${minMax.min.toFixed(0)}°`);
+  if (minMax && minMax.max - minMax.min >= 0.1) {
+    contextParts.push(`máx ${minMax.max.toFixed(1)}°`);
+    contextParts.push(`mín ${minMax.min.toFixed(1)}°`);
   }
 
   let livenessText: string;

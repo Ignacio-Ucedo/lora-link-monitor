@@ -1,11 +1,13 @@
 import { createContext, useContext, ReactNode } from "react";
 import { useWeatherBLE, BLEStatus, WeatherData, Reading } from "./useWeatherBLE";
+import { DayStats } from "@/storage/dayStats";
 
 type WeatherContextValue = {
   status: BLEStatus;
   data: WeatherData | null;
   history: Reading[];
   lastUpdate: number | null;
+  dayStats: DayStats | null;
   startDemo: () => void;
 };
 

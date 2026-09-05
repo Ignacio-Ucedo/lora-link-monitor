@@ -9,6 +9,12 @@ import {
   destroyManager,
   getBleManager,
 } from "@/ble/weather-ble";
+import {
+  DayStats,
+  foldReading,
+  loadDayStats,
+  saveDayStats,
+} from "@/storage/dayStats";
 
 // La conexión se disuelve: el hook busca, conecta y reconecta solo, en
 // background. La UI solo consume status/data; nunca inicia la conexión.
@@ -63,7 +69,9 @@ export function useWeatherBLE() {
   const [data, setData] = useState<WeatherData | null>(null);
   const [history, setHistory] = useState<Reading[]>([]);
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
+  const [dayStats, setDayStats] = useState<DayStats | null>(null);
 
+  const dayStatsRef = useRef<DayStats | null>(null);
   const scanRef = useRef<{ stop: () => void } | null>(null);
   const subscriptionRef = useRef<Subscription | null>(null);
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,6 +91,18 @@ export function useWeatherBLE() {
       next.push({ ts, t: payload.t, h: payload.h, w: payload.w });
       return next;
     });
+
+    // Mín/máx del día: plegar y persistir solo cuando cambia un extremo o el
+    // día (evita escribir en cada notificación de ~2 s).
+    if (payload.t != null) {
+      const prev = dayStatsRef.current;
+      const next = foldReading(prev, payload.t, ts);
+      if (!prev || prev.date !== next.date || prev.min !== next.min || prev.max !== next.max) {
+        dayStatsRef.current = next;
+        setDayStats(next);
+        saveDayStats(next);
+      }
+    }
   }, []);
 
   const clearTimers = useCallback(() => {
@@ -193,12 +213,16 @@ export function useWeatherBLE() {
     // Sembrar 3 h de historia para ver sparkline/tendencia/min-máx al instante.
     const now = Date.now();
     const seed: Reading[] = [];
+    let stats: DayStats | null = null;
     for (let i = 180; i > 0; i--) {
       const ts = now - i * 60_000;
       const p = sample(ts);
       seed.push({ ts, t: p.t, h: p.h, w: p.w });
+      if (p.t != null) stats = foldReading(stats, p.t, ts);
     }
     setHistory(seed);
+    dayStatsRef.current = stats;
+    setDayStats(stats);
 
     const tick = () => handleReading(sample(Date.now()));
     tick();
@@ -209,6 +233,14 @@ export function useWeatherBLE() {
   useEffect(() => {
     aliveRef.current = true;
     attempt();
+
+    // Recuperar el mín/máx persistido. Si es de un día anterior, el primer
+    // plegado de una lectura de hoy lo reinicia; la UI ignora fechas viejas.
+    loadDayStats().then((s) => {
+      if (!aliveRef.current || !s) return;
+      dayStatsRef.current = s;
+      setDayStats(s);
+    });
 
     // Escuchar cambios de estado del BT: cuando vuelve a PoweredOn tras estar
     // apagado, forzamos un nuevo intento inmediato (el scan anterior ya murió).
@@ -233,5 +265,5 @@ export function useWeatherBLE() {
     };
   }, [attempt, clearTimers]);
 
-  return { status, data, history, lastUpdate, startDemo };
+  return { status, data, history, lastUpdate, dayStats, startDemo };
 }
