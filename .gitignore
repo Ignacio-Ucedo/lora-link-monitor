@@ -15,6 +15,16 @@ lora_app/android/app/src/main/res/drawable-xhdpi/node_modules_*
 lora_app/android/app/src/main/res/drawable-xxhdpi/node_modules_*
 lora_app/android/app/src/main/res/drawable-xxxhdpi/node_modules_*
 lora_app/android/app/src/main/res/raw/
+weather_app/android/app/build/
+weather_app/android/app/.cxx/
+weather_app/android/.gradle/
+weather_app/android/local.properties
+weather_app/android/app/src/main/assets/
+weather_app/android/app/src/main/res/drawable-mdpi/node_modules_*
+weather_app/android/app/src/main/res/drawable-xhdpi/node_modules_*
+weather_app/android/app/src/main/res/drawable-xxhdpi/node_modules_*
+weather_app/android/app/src/main/res/drawable-xxxhdpi/node_modules_*
+weather_app/android/app/src/main/res/raw/
 
 # Rust / Cargo
 target/
@@ -26,6 +36,7 @@ build/
 sdkconfig
 managed_components/
 lora_firmware/.embuild/
+weather_firmware/.pio/
 
 # Secrets / local config
 .env
