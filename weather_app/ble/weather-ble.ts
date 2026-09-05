@@ -53,7 +53,12 @@ export async function connectToWeatherStation(deviceId: string): Promise<Device>
 
 export function subscribeToWeatherData(
   device: Device,
-  onData: (payload: { t: number | null; h: number | null; w: number; d: string | null }) => void,
+  onData: (payload: {
+    t: number | null;
+    h: number | null;
+    w: number | null;
+    d: string | null;
+  }) => void,
   onError: (error: Error) => void,
 ): Subscription {
   return device.monitorCharacteristicForService(
@@ -72,12 +77,24 @@ export function subscribeToWeatherData(
         const end = decoded.lastIndexOf("}");
         const json = end >= 0 ? decoded.slice(0, end + 1) : decoded;
         const parsed = JSON.parse(json);
-        onData(parsed);
+        // Sanear: campos ausentes o no numéricos quedan en null; la UI oculta
+        // la métrica en vez de inventar un cero (honestidad con pocos datos).
+        const num = (v: unknown) => (typeof v === "number" && isFinite(v) ? v : null);
+        onData({
+          t: num(parsed.t),
+          h: num(parsed.h),
+          w: num(parsed.w),
+          d: typeof parsed.d === "string" ? parsed.d : null,
+        });
       } catch {
         // malformed payload — ignore
       }
     },
   );
+}
+
+export function getBleManager() {
+  return getManager();
 }
 
 export function disconnectDevice(deviceId: string) {

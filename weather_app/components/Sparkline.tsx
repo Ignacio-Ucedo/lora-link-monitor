@@ -18,9 +18,13 @@ export function Sparkline({
   let line = "";
   let area = "";
   if (width > 0 && values.length >= 2) {
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const range = max - min || 1;
+    const dataMin = Math.min(...values);
+    const dataMax = Math.max(...values);
+    // Rango visual mínimo de 2°: el jitter del sensor (±0.1°) no debe
+    // dibujarse como montaña.
+    const range = Math.max(dataMax - dataMin, 2);
+    const mid = (dataMin + dataMax) / 2;
+    const min = mid - range / 2;
     const pad = 4;
     const stepX = width / (values.length - 1);
     line = values

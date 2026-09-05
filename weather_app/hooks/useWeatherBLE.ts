@@ -7,6 +7,7 @@ import {
   subscribeToWeatherData,
   disconnectDevice,
   destroyManager,
+  getBleManager,
 } from "@/ble/weather-ble";
 
 // La conexión se disuelve: el hook busca, conecta y reconecta solo, en
@@ -22,7 +23,7 @@ export type BLEStatus =
 export type WeatherData = {
   t: number | null;
   h: number | null;
-  w: number;
+  w: number | null;
   d: string | null;
 };
 
@@ -30,14 +31,15 @@ export type Reading = {
   ts: number;
   t: number | null;
   h: number | null;
-  w: number;
+  w: number | null;
 };
 
 // ~3 h de lecturas a una notificación cada ~2 s.
 const HISTORY_MAX = 5400;
 
-// Espera entre reintentos cuando no se encuentra la estación.
-const RETRY_MS = 8000;
+// Espera entre reintentos. Con BT recién encendido, el stack necesita ~3 s para
+// iniciar, así que no vale la pena reintentar antes.
+const RETRY_MS = 5000;
 
 async function requestBLEPermissions(): Promise<boolean> {
   if (Platform.OS !== "android") return true;
@@ -126,7 +128,7 @@ export function useWeatherBLE() {
     };
 
     const onDevice = async (device: Device) => {
-      if (found) return;
+      if (found || !aliveRef.current) return;
       found = true;
       scanRef.current?.stop();
       if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
@@ -162,6 +164,8 @@ export function useWeatherBLE() {
 
     scanRef.current = scanForWeatherStation(onDevice, () => scheduleRetry());
 
+    // Timeout del scan: 10 s. Si el BT se apagó y volvió mientras escaneábamos,
+    // el scan queda zombie sin notificar error → lo cortamos y reintentamos.
     scanTimeoutRef.current = setTimeout(() => {
       if (!found) {
         scanRef.current?.stop();
@@ -205,8 +209,23 @@ export function useWeatherBLE() {
   useEffect(() => {
     aliveRef.current = true;
     attempt();
+
+    // Escuchar cambios de estado del BT: cuando vuelve a PoweredOn tras estar
+    // apagado, forzamos un nuevo intento inmediato (el scan anterior ya murió).
+    const manager = getBleManager();
+    let btSub: { remove: () => void } | null = null;
+    if (manager) {
+      btSub = manager.onStateChange((state) => {
+        if (state === "PoweredOn" && aliveRef.current && !attemptingRef.current && !demoTimerRef.current) {
+          clearTimers();
+          attempt();
+        }
+      }, true);
+    }
+
     return () => {
       aliveRef.current = false;
+      btSub?.remove();
       clearTimers();
       if (deviceIdRef.current) disconnectDevice(deviceIdRef.current);
       deviceIdRef.current = null;

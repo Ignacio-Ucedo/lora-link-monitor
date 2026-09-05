@@ -33,7 +33,7 @@ function dayMinMax(history: Reading[]): { min: number; max: number } | null {
 }
 
 function agoLabel(ms: number): string {
-  const s = Math.round(ms / 1000);
+  const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `hace ${s} s`;
   const m = Math.round(s / 60);
   if (m < 60) return `hace ${m} min`;
@@ -51,7 +51,10 @@ export default function HomeScreen() {
   }, []);
 
   const age = lastUpdate != null ? now - lastUpdate : null;
-  const live = status === "connected" && age != null && age <= STALE_MS;
+  // Dato fresco = en vivo, independientemente del estado interno BLE.
+  // La conexión es infraestructura invisible; el usuario solo ve si el dato es fresco.
+  const fresh = age != null && age <= STALE_MS;
+  const live = fresh;
   const expired = age == null || age > EXPIRED_MS;
 
   const gradient = gradientForTemp(!expired && data?.t != null ? data.t : null);
@@ -59,18 +62,28 @@ export default function HomeScreen() {
   const minMax = useMemo(() => dayMinMax(history), [history]);
 
   // Últimas 3 h de temperatura, muestreadas a ~60 puntos para el sparkline.
-  const sparkValues = useMemo(() => {
+  const spark = useMemo(() => {
     const nowMs = Date.now();
     const temps = history.filter((r) => r.t != null && nowMs - r.ts <= 3 * 3600_000);
-    if (temps.length < 2) return [];
+    if (temps.length < 2) return null;
+    const spanMs = temps[temps.length - 1].ts - temps[0].ts;
+    // Con menos de 10 min de historia la línea no cuenta nada todavía.
+    if (spanMs < 10 * 60_000) return null;
+    const spanMin = Math.round(spanMs / 60_000);
+    const label =
+      spanMin < 90 ? `últimos ${spanMin} min` : `últimas ${Math.round(spanMin / 60)} h`;
     const N = 60;
-    if (temps.length <= N) return temps.map((r) => r.t as number);
-    const out: number[] = [];
-    for (let i = 0; i < N; i++) {
-      const idx = Math.floor((i * (temps.length - 1)) / (N - 1));
-      out.push(temps[idx].t as number);
+    let values: number[];
+    if (temps.length <= N) {
+      values = temps.map((r) => r.t as number);
+    } else {
+      values = [];
+      for (let i = 0; i < N; i++) {
+        const idx = Math.floor((i * (temps.length - 1)) / (N - 1));
+        values.push(temps[idx].t as number);
+      }
     }
-    return out;
+    return { values, label };
   }, [history]);
 
   const temp = data?.t != null ? data.t.toFixed(1) : "--";
@@ -80,7 +93,7 @@ export default function HomeScreen() {
   const contextParts: string[] = [];
   if (trend === "up") contextParts.push("↑ subiendo");
   if (trend === "down") contextParts.push("↓ bajando");
-  if (minMax && minMax.max - minMax.min >= 0.1) {
+  if (minMax && minMax.max - minMax.min >= 0.5) {
     contextParts.push(`máx ${minMax.max.toFixed(0)}°`);
     contextParts.push(`mín ${minMax.min.toFixed(0)}°`);
   }
@@ -90,8 +103,8 @@ export default function HomeScreen() {
   if (live) {
     livenessText = "en vivo";
     dotColor = gradient.accent;
-  } else if (status === "connected" && age != null) {
-    livenessText = agoLabel(age);
+  } else if (age != null && !live) {
+    livenessText = status === "connected" ? agoLabel(age) : `${agoLabel(age)} · buscando…`;
     dotColor = Palette.stale;
   } else if (status === "connecting") {
     livenessText = "conectando…";
@@ -137,10 +150,10 @@ export default function HomeScreen() {
             )}
           </View>
 
-          {sparkValues.length >= 2 && (
+          {spark != null && (
             <View style={[styles.spark, !live && styles.attenuated]}>
-              <Sparkline values={sparkValues} color={gradient.accent} height={64} />
-              <Text style={styles.sparkLabel}>Últimas 3 h</Text>
+              <Sparkline values={spark.values} color={gradient.accent} height={64} />
+              <Text style={styles.sparkLabel}>{spark.label}</Text>
             </View>
           )}
 
@@ -151,11 +164,13 @@ export default function HomeScreen() {
                 <Text style={styles.metricValue}>{hum}</Text>
                 <Text style={styles.metricLabel}>Humedad</Text>
               </View>
-              <View style={styles.metric}>
-                <Wind size={20} color={gradient.accent} strokeWidth={2} />
-                <Text style={styles.metricValue}>{windSpeed}</Text>
-                <Text style={styles.metricLabel}>Viento</Text>
-              </View>
+              {data.w != null && (
+                <View style={styles.metric}>
+                  <Wind size={20} color={gradient.accent} strokeWidth={2} />
+                  <Text style={styles.metricValue}>{windSpeed}</Text>
+                  <Text style={styles.metricLabel}>Viento</Text>
+                </View>
+              )}
             </View>
           )}
         </ScrollView>
