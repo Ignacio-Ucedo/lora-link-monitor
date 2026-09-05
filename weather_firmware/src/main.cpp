@@ -132,7 +132,10 @@ void loop() {
 
         Serial.println(payload);
 
-        pCharacteristic->setValue(payload);
+        // Enviar SOLO los bytes del JSON, no todo el buffer. setValue(char[80])
+        // toma el tamaño del arreglo (80) y manda el JSON + bytes basura sin
+        // inicializar, rompiendo el JSON.parse del lado de la app.
+        pCharacteristic->setValue((uint8_t*)payload, strlen(payload));
         pCharacteristic->notify();
     }
 }
