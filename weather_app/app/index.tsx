@@ -89,7 +89,9 @@ export default function HomeScreen() {
   const contextParts: string[] = [];
   if (trend === "up") contextParts.push("↑ subiendo");
   if (trend === "down") contextParts.push("↓ bajando");
-  if (minMax && minMax.max - minMax.min >= 0.1) {
+  // Mostrar cuando los valores redondeados difieren (evita el "0.0999… < 0.1"
+  // del punto flotante y el ruido de "máx 16.9 · mín 16.9").
+  if (minMax && minMax.max.toFixed(1) !== minMax.min.toFixed(1)) {
     contextParts.push(`máx ${minMax.max.toFixed(1)}°`);
     contextParts.push(`mín ${minMax.min.toFixed(1)}°`);
   }
