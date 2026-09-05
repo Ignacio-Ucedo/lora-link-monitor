@@ -80,6 +80,13 @@ void setup() {
         NIMBLE_PROPERTY::NOTIFY
     );
     pService->start();
+
+    // La app escanea filtrando por Service UUID, así que hay que incluirlo en el
+    // paquete de advertising (NimBLE no lo agrega solo). Sin esto el scan por UUID
+    // no hace match y la app nunca encuentra la estación.
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(SERVICE_UUID);
+    pAdvertising->setScanResponse(true);
     NimBLEDevice::startAdvertising();
 
     tiempoAnterior = millis();
