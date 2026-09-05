@@ -67,8 +67,7 @@ export default function HomeScreen() {
     const temps = history.filter((r) => r.t != null && nowMs - r.ts <= 3 * 3600_000);
     if (temps.length < 2) return null;
     const spanMs = temps[temps.length - 1].ts - temps[0].ts;
-    // Con menos de 10 min de historia la línea no cuenta nada todavía.
-    if (spanMs < 10 * 60_000) return null;
+    if (spanMs < 2 * 60_000) return null;
     const spanMin = Math.round(spanMs / 60_000);
     const label =
       spanMin < 90 ? `últimos ${spanMin} min` : `últimas ${Math.round(spanMin / 60)} h`;
