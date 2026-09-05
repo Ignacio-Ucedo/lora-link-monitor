@@ -5,7 +5,7 @@ import { useWeather } from "@/hooks/WeatherContext";
 import { Colors } from "@/constants/theme";
 
 export default function ConnectScreen() {
-  const { status, error, connect } = useWeather();
+  const { status, error, connect, startDemo } = useWeather();
   const router = useRouter();
 
   useEffect(() => {
@@ -37,6 +37,12 @@ export default function ConnectScreen() {
           onPress={connect}
         >
           <Text style={styles.buttonText}>Conectar</Text>
+        </Pressable>
+      )}
+
+      {__DEV__ && !busy && (
+        <Pressable onPress={startDemo}>
+          <Text style={styles.demoText}>Modo demo</Text>
         </Pressable>
       )}
 
@@ -100,6 +106,11 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 17,
     fontWeight: "600",
+  },
+  demoText: {
+    color: Colors.textMuted,
+    fontSize: 13,
+    textDecorationLine: "underline",
   },
   errorBox: {
     alignItems: "center",

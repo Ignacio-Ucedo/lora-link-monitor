@@ -18,6 +18,16 @@ export type WeatherData = {
   d: string | null;
 };
 
+export type Reading = {
+  ts: number;
+  t: number | null;
+  h: number | null;
+  w: number;
+};
+
+// ~3 h de lecturas a una notificación cada ~2 s.
+const HISTORY_MAX = 5400;
+
 async function requestBLEPermissions(): Promise<boolean> {
   if (Platform.OS !== "android") return true;
   if (Platform.Version >= 31) {
@@ -39,11 +49,26 @@ export function useWeatherBLE() {
   const [status, setStatus] = useState<BLEStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<WeatherData | null>(null);
+  const [history, setHistory] = useState<Reading[]>([]);
+  const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   const [deviceId, setDeviceId] = useState<string | null>(null);
 
   const scanRef = useRef<{ stop: () => void } | null>(null);
   const subscriptionRef = useRef<Subscription | null>(null);
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const demoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const handleReading = useCallback((payload: WeatherData) => {
+    const ts = Date.now();
+    setData(payload);
+    setLastUpdate(ts);
+    setHistory((prev) => {
+      const next =
+        prev.length >= HISTORY_MAX ? prev.slice(prev.length - HISTORY_MAX + 1) : prev.slice();
+      next.push({ ts, t: payload.t, h: payload.h, w: payload.w });
+      return next;
+    });
+  }, []);
 
   const cleanup = useCallback(() => {
     scanRef.current?.stop();
@@ -53,6 +78,10 @@ export function useWeatherBLE() {
     if (scanTimeoutRef.current) {
       clearTimeout(scanTimeoutRef.current);
       scanTimeoutRef.current = null;
+    }
+    if (demoTimerRef.current) {
+      clearInterval(demoTimerRef.current);
+      demoTimerRef.current = null;
     }
   }, []);
 
@@ -64,6 +93,38 @@ export function useWeatherBLE() {
     setStatus("idle");
     setError(null);
   }, [cleanup, deviceId]);
+
+  // Solo desarrollo: simula lecturas para iterar la UI sin la estación física.
+  const startDemo = useCallback(() => {
+    if (!__DEV__) return;
+    cleanup();
+    setError(null);
+
+    const sample = (ts: number): WeatherData => {
+      const s = ts / 1000;
+      return {
+        t: 18.2 + 3.5 * Math.sin(s / 1900),
+        h: 55 + 8 * Math.sin(s / 2600 + 1),
+        w: Math.max(0, 11 + 7 * Math.sin(s / 700)),
+        d: "NE",
+      };
+    };
+
+    // Sembrar 3 h de historia para ver sparkline/tendencia/min-máx al instante.
+    const now = Date.now();
+    const seed: Reading[] = [];
+    for (let i = 180; i > 0; i--) {
+      const ts = now - i * 60_000;
+      const p = sample(ts);
+      seed.push({ ts, t: p.t, h: p.h, w: p.w });
+    }
+    setHistory(seed);
+
+    const tick = () => handleReading(sample(Date.now()));
+    tick();
+    demoTimerRef.current = setInterval(tick, 2000);
+    setStatus("connected");
+  }, [cleanup, handleReading]);
 
   const connect = useCallback(async () => {
     cleanup();
@@ -95,7 +156,7 @@ export function useWeatherBLE() {
 
         subscriptionRef.current = subscribeToWeatherData(
           connected,
-          (payload) => setData(payload),
+          handleReading,
           (err) => {
             setError(err.message);
             setStatus("error");
@@ -126,7 +187,7 @@ export function useWeatherBLE() {
         setStatus("error");
       }
     }, 10_000);
-  }, [cleanup]);
+  }, [cleanup, handleReading]);
 
   // Al desmontar: además de limpiar scan/suscripción, destruir el BleManager
   // para no filtrar el cliente GATT nativo entre recargas de JS.
@@ -138,5 +199,5 @@ export function useWeatherBLE() {
     [cleanup],
   );
 
-  return { status, error, data, connect, disconnect };
+  return { status, error, data, history, lastUpdate, connect, disconnect, startDemo };
 }

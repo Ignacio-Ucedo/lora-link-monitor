@@ -1,21 +1,36 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
+import { Droplets, Wind } from "lucide-react-native";
 import { useWeather } from "@/hooks/WeatherContext";
-import { WeatherCard } from "@/components/WeatherCard";
-import { WindGauge } from "@/components/WindGauge";
-import { ConnectionBanner } from "@/components/ConnectionBanner";
-import { Colors } from "@/constants/theme";
+import { Reading } from "@/hooks/useWeatherBLE";
+import { AmbientBackground } from "@/components/AmbientBackground";
+import { Sparkline } from "@/components/Sparkline";
+import { Palette, gradientForTemp } from "@/constants/theme";
 
-const DIR_TO_DEG: Record<string, number> = {
-  N: 0, NE: 45, E: 90, SE: 135, S: 180, SO: 225, O: 270, NO: 315,
-};
+// Tendencia sobre la última media hora; con menos de 5 min de datos no se afirma nada.
+function tempTrend(history: Reading[]): "up" | "down" | null {
+  const now = Date.now();
+  const windowed = history.filter((r) => r.t != null && now - r.ts < 30 * 60_000);
+  if (windowed.length < 2) return null;
+  const first = windowed[0];
+  const last = windowed[windowed.length - 1];
+  if (last.ts - first.ts < 5 * 60_000) return null;
+  const delta = (last.t as number) - (first.t as number);
+  if (Math.abs(delta) < 0.3) return null;
+  return delta > 0 ? "up" : "down";
+}
+
+function dayMinMax(history: Reading[]): { min: number; max: number } | null {
+  const temps = history.filter((r) => r.t != null).map((r) => r.t as number);
+  if (temps.length === 0) return null;
+  return { min: Math.min(...temps), max: Math.max(...temps) };
+}
 
 export default function DashboardScreen() {
-  const { status, data, disconnect } = useWeather();
+  const { status, data, history, disconnect } = useWeather();
   const router = useRouter();
-  const windDir = data?.d ?? null;
-  const windDeg = windDir != null ? (DIR_TO_DEG[windDir] ?? 0) : 0;
 
   useEffect(() => {
     if (status === "idle") {
@@ -23,135 +38,201 @@ export default function DashboardScreen() {
     }
   }, [status, router]);
 
-  const temp = data?.t != null ? `${data.t.toFixed(1)}` : "--";
-  const hum = data?.h != null ? `${data.h.toFixed(0)}` : "--";
-  const windSpeed = data?.w != null ? data.w.toFixed(1) : "--";
+  const gradient = gradientForTemp(data?.t ?? null);
+  const trend = useMemo(() => tempTrend(history), [history]);
+  const minMax = useMemo(() => dayMinMax(history), [history]);
+
+  // Últimas 3 h de temperatura, muestreadas a ~60 puntos para el sparkline.
+  const sparkValues = useMemo(() => {
+    const now = Date.now();
+    const temps = history.filter((r) => r.t != null && now - r.ts <= 3 * 3600_000);
+    if (temps.length < 2) return [];
+    const N = 60;
+    if (temps.length <= N) return temps.map((r) => r.t as number);
+    const out: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const idx = Math.floor((i * (temps.length - 1)) / (N - 1));
+      out.push(temps[idx].t as number);
+    }
+    return out;
+  }, [history]);
+
+  const temp = data?.t != null ? data.t.toFixed(1) : "--";
+  const hum = data?.h != null ? `${data.h.toFixed(0)}%` : "--";
+  const windSpeed = data?.w != null ? `${data.w.toFixed(0)} km/h` : "--";
+
+  const contextParts: string[] = [];
+  if (trend === "up") contextParts.push("↑ subiendo");
+  if (trend === "down") contextParts.push("↓ bajando");
+  if (minMax && minMax.max - minMax.min >= 0.1) {
+    contextParts.push(`máx ${minMax.max.toFixed(0)}°`);
+    contextParts.push(`mín ${minMax.min.toFixed(0)}°`);
+  }
 
   return (
-    <ScrollView
-      style={styles.scroll}
-      contentContainerStyle={styles.container}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.header}>
-        <Text style={styles.title}>Estación meteorológica</Text>
-        <ConnectionBanner status={status} />
-      </View>
+    <View style={styles.root}>
+      <AmbientBackground gradient={gradient} />
+      <SafeAreaView style={styles.safe}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.container}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.place}>
+            <Text style={styles.placeText}>Estación</Text>
+            <View style={[styles.liveDot, { backgroundColor: gradient.accent }]} />
+            <Text style={styles.placeText}>en vivo</Text>
+          </View>
 
-      <View style={styles.row}>
-        <WeatherCard label="Temperatura" value={temp} unit="°C" icon="🌡️" accent={Colors.accent} />
-        <WeatherCard label="Humedad" value={hum} unit="%" icon="💧" accent="#79C0FF" />
-      </View>
+          <View style={styles.hero}>
+            <View style={styles.heroRow}>
+              <Text style={[styles.heroValue, { color: gradient.accent }]}>{temp}</Text>
+              <Text style={[styles.heroDegree, { color: gradient.accent }]}>°</Text>
+            </View>
+            {contextParts.length > 0 && (
+              <Text style={styles.heroContext}>{contextParts.join(" · ")}</Text>
+            )}
+          </View>
 
-      <View style={styles.row}>
-        <WeatherCard
-          label="Viento"
-          value={windSpeed}
-          unit="km/h"
-          icon="💨"
-          accent={Colors.green}
-        />
-        <View style={[styles.card]}>
-          <Text style={styles.cardIcon}>🧭</Text>
-          <WindGauge directionDeg={windDeg} speedKmh={data?.w ?? 0} />
-          <Text style={styles.dirLabel}>{windDir ?? "--"}</Text>
-          <Text style={styles.cardUnit}>Dirección</Text>
-        </View>
-      </View>
+          {sparkValues.length >= 2 && (
+            <View style={styles.spark}>
+              <Sparkline values={sparkValues} color={gradient.accent} height={64} />
+              <Text style={styles.sparkLabel}>Últimas 3 h</Text>
+            </View>
+          )}
 
-      <View style={styles.row}>
-        <WeatherCard label="Lluvia" value="0" unit="mm" icon="🌧️" accent={Colors.textMuted} />
-        <View style={[styles.card, styles.cardPlaceholder]}>
-          <Text style={styles.cardIcon}>📡</Text>
-          <Text style={styles.placeholderText}>Sin datos</Text>
-          <Text style={styles.cardUnit}>Sin sensor</Text>
-        </View>
-      </View>
+          <View style={styles.belt}>
+            <View style={styles.metric}>
+              <Droplets size={20} color={gradient.accent} strokeWidth={2} />
+              <Text style={styles.metricValue}>{hum}</Text>
+              <Text style={styles.metricLabel}>Humedad</Text>
+            </View>
+            <View style={styles.metric}>
+              <Wind size={20} color={gradient.accent} strokeWidth={2} />
+              <Text style={styles.metricValue}>{windSpeed}</Text>
+              <Text style={styles.metricLabel}>Viento</Text>
+            </View>
+          </View>
 
-      <Pressable
-        style={({ pressed }) => [styles.disconnectButton, pressed && { opacity: 0.7 }]}
-        onPress={() => {
-          disconnect();
-          router.replace("/");
-        }}
-      >
-        <Text style={styles.disconnectText}>Desconectar</Text>
-      </Pressable>
-    </ScrollView>
+          <Pressable
+            style={({ pressed }) => [styles.disconnect, pressed && { opacity: 0.6 }]}
+            onPress={() => {
+              disconnect();
+              router.replace("/");
+            }}
+          >
+            <Text style={styles.disconnectText}>Desconectar</Text>
+          </Pressable>
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: "#0D1117",
+  },
+  safe: {
+    flex: 1,
+  },
   scroll: {
     flex: 1,
-    backgroundColor: Colors.background,
   },
   container: {
-    padding: 16,
-    gap: 12,
+    flexGrow: 1,
+    paddingHorizontal: 24,
+    paddingTop: 24,
     paddingBottom: 32,
   },
-  header: {
+  place: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 4,
+    gap: 8,
   },
-  title: {
-    fontSize: 17,
-    fontWeight: "600",
-    color: Colors.text,
-  },
-  row: {
-    flexDirection: "row",
-    gap: 12,
-    height: 160,
-  },
-  card: {
-    backgroundColor: Colors.card,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 16,
-    flex: 1,
-    gap: 4,
-  },
-  cardPlaceholder: {
-    opacity: 0.5,
-  },
-  cardIcon: {
-    fontSize: 24,
-  },
-  cardUnit: {
-    fontSize: 12,
-    color: Colors.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  dirLabel: {
-    fontSize: 22,
-    fontWeight: "700",
-    color: Colors.accent,
-    marginTop: 2,
-  },
-  placeholderText: {
-    fontSize: 16,
-    color: Colors.textMuted,
-    fontWeight: "500",
-  },
-  disconnectButton: {
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderRadius: 12,
-    padding: 14,
-    alignItems: "center",
-  },
-  disconnectText: {
-    color: Colors.textMuted,
+  placeText: {
     fontSize: 15,
     fontWeight: "500",
+    color: Palette.textSecondary,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  hero: {
+    alignItems: "center",
+    marginTop: 48,
+    marginBottom: 48,
+  },
+  heroRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  heroValue: {
+    fontSize: 96,
+    fontWeight: "200",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -2,
+  },
+  heroDegree: {
+    fontSize: 38,
+    fontWeight: "300",
+    marginTop: 14,
+  },
+  heroContext: {
+    fontSize: 15,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+    marginTop: 4,
+  },
+  spark: {
+    marginBottom: 32,
+    gap: 8,
+  },
+  sparkLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    textAlign: "center",
+  },
+  belt: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  metric: {
+    flex: 1,
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 20,
+    borderRadius: 16,
+    backgroundColor: Palette.surface,
+  },
+  metricValue: {
+    fontSize: 28,
+    fontWeight: "300",
+    fontVariant: ["tabular-nums"],
+    color: Palette.text,
+  },
+  metricLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  disconnect: {
+    marginTop: "auto",
+    alignSelf: "center",
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+  },
+  disconnectText: {
+    fontSize: 13,
+    fontWeight: "500",
+    color: Palette.textSecondary,
   },
 });

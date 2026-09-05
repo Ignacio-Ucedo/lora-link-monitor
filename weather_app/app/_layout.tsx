@@ -15,7 +15,7 @@ export default function RootLayout() {
         }}
       >
         <Stack.Screen name="index" options={{ title: "WeatherStation", headerShown: false }} />
-        <Stack.Screen name="dashboard" options={{ title: "Estación meteorológica" }} />
+        <Stack.Screen name="dashboard" options={{ headerShown: false }} />
       </Stack>
     </WeatherProvider>
   );
