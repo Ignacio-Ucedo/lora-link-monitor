@@ -66,7 +66,11 @@ export function subscribeToWeatherData(
       }
       if (!characteristic?.value) return;
       try {
-        const json = Buffer.from(characteristic.value, "base64").toString("utf-8");
+        const decoded = Buffer.from(characteristic.value, "base64").toString("utf-8");
+        // Recortar cualquier byte sobrante después del objeto JSON (algunos
+        // firmwares mandan el buffer completo con relleno tras el `}`).
+        const end = decoded.lastIndexOf("}");
+        const json = end >= 0 ? decoded.slice(0, end + 1) : decoded;
         const parsed = JSON.parse(json);
         onData(parsed);
       } catch {
@@ -78,4 +82,14 @@ export function subscribeToWeatherData(
 
 export function disconnectDevice(deviceId: string) {
   getManager()?.cancelDeviceConnection(deviceId);
+}
+
+// Destruye el BleManager y libera el cliente GATT nativo. Imprescindible al
+// desmontar: si no se llama, cada recarga de JS (hot reload / relanzar la app)
+// deja un cliente GATT vivo en el stack Bluetooth del sistema. Esos clientes
+// filtrados siguen suscritos a la characteristic y hacen que Android descarte
+// las notificaciones de la conexión nueva (error bta_gattc: notif no registrada).
+export function destroyManager() {
+  _manager?.destroy();
+  _manager = null;
 }

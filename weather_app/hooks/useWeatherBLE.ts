@@ -6,6 +6,7 @@ import {
   connectToWeatherStation,
   subscribeToWeatherData,
   disconnectDevice,
+  destroyManager,
 } from "@/ble/weather-ble";
 
 export type BLEStatus = "idle" | "scanning" | "connecting" | "connected" | "error";
@@ -127,7 +128,15 @@ export function useWeatherBLE() {
     }, 10_000);
   }, [cleanup]);
 
-  useEffect(() => () => cleanup(), [cleanup]);
+  // Al desmontar: además de limpiar scan/suscripción, destruir el BleManager
+  // para no filtrar el cliente GATT nativo entre recargas de JS.
+  useEffect(
+    () => () => {
+      cleanup();
+      destroyManager();
+    },
+    [cleanup],
+  );
 
   return { status, error, data, connect, disconnect };
 }
