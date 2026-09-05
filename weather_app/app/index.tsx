@@ -1,143 +1,265 @@
-import { useEffect } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
-import { useRouter } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { Droplets, Wind } from "lucide-react-native";
 import { useWeather } from "@/hooks/WeatherContext";
-import { Colors } from "@/constants/theme";
+import { Reading } from "@/hooks/useWeatherBLE";
+import { AmbientBackground } from "@/components/AmbientBackground";
+import { Sparkline } from "@/components/Sparkline";
+import { Palette, gradientForTemp } from "@/constants/theme";
 
-export default function ConnectScreen() {
-  const { status, error, connect, startDemo } = useWeather();
-  const router = useRouter();
+// >6 s sin notificación = dato viejo (la estación notifica cada ~2 s).
+const STALE_MS = 6000;
+// Dato tan viejo que el lienzo se apaga.
+const EXPIRED_MS = 60_000;
 
+// Tendencia sobre la última media hora; con menos de 5 min de datos no se afirma nada.
+function tempTrend(history: Reading[]): "up" | "down" | null {
+  const now = Date.now();
+  const windowed = history.filter((r) => r.t != null && now - r.ts < 30 * 60_000);
+  if (windowed.length < 2) return null;
+  const first = windowed[0];
+  const last = windowed[windowed.length - 1];
+  if (last.ts - first.ts < 5 * 60_000) return null;
+  const delta = (last.t as number) - (first.t as number);
+  if (Math.abs(delta) < 0.3) return null;
+  return delta > 0 ? "up" : "down";
+}
+
+function dayMinMax(history: Reading[]): { min: number; max: number } | null {
+  const temps = history.filter((r) => r.t != null).map((r) => r.t as number);
+  if (temps.length === 0) return null;
+  return { min: Math.min(...temps), max: Math.max(...temps) };
+}
+
+function agoLabel(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `hace ${s} s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `hace ${m} min`;
+  return `hace ${Math.round(m / 60)} h`;
+}
+
+export default function HomeScreen() {
+  const { status, data, history, lastUpdate, startDemo } = useWeather();
+
+  // Reloj de 1 s para evaluar frescura del dato.
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (status === "connected") {
-      router.replace({ pathname: "/dashboard", params: {} });
-    }
-  }, [status, router]);
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
-  const scanning = status === "scanning";
-  const connecting = status === "connecting";
-  const busy = scanning || connecting;
+  const age = lastUpdate != null ? now - lastUpdate : null;
+  const live = status === "connected" && age != null && age <= STALE_MS;
+  const expired = age == null || age > EXPIRED_MS;
+
+  const gradient = gradientForTemp(!expired && data?.t != null ? data.t : null);
+  const trend = useMemo(() => tempTrend(history), [history]);
+  const minMax = useMemo(() => dayMinMax(history), [history]);
+
+  // Últimas 3 h de temperatura, muestreadas a ~60 puntos para el sparkline.
+  const sparkValues = useMemo(() => {
+    const nowMs = Date.now();
+    const temps = history.filter((r) => r.t != null && nowMs - r.ts <= 3 * 3600_000);
+    if (temps.length < 2) return [];
+    const N = 60;
+    if (temps.length <= N) return temps.map((r) => r.t as number);
+    const out: number[] = [];
+    for (let i = 0; i < N; i++) {
+      const idx = Math.floor((i * (temps.length - 1)) / (N - 1));
+      out.push(temps[idx].t as number);
+    }
+    return out;
+  }, [history]);
+
+  const temp = data?.t != null ? data.t.toFixed(1) : "--";
+  const hum = data?.h != null ? `${data.h.toFixed(0)}%` : "--";
+  const windSpeed = data?.w != null ? `${data.w.toFixed(0)} km/h` : "--";
+
+  const contextParts: string[] = [];
+  if (trend === "up") contextParts.push("↑ subiendo");
+  if (trend === "down") contextParts.push("↓ bajando");
+  if (minMax && minMax.max - minMax.min >= 0.1) {
+    contextParts.push(`máx ${minMax.max.toFixed(0)}°`);
+    contextParts.push(`mín ${minMax.min.toFixed(0)}°`);
+  }
+
+  let livenessText: string;
+  let dotColor: string | null;
+  if (live) {
+    livenessText = "en vivo";
+    dotColor = gradient.accent;
+  } else if (status === "connected" && age != null) {
+    livenessText = agoLabel(age);
+    dotColor = Palette.stale;
+  } else if (status === "connecting") {
+    livenessText = "conectando…";
+    dotColor = null;
+  } else if (status === "no-permission") {
+    livenessText = "sin permiso de Bluetooth";
+    dotColor = null;
+  } else {
+    livenessText = age != null ? `${agoLabel(age)} · buscando…` : "buscando…";
+    dotColor = age != null ? Palette.stale : null;
+  }
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>🌤</Text>
-      <Text style={styles.appName}>WeatherStation</Text>
-      <Text style={styles.subtitle}>Conectate a tu estación meteorológica via Bluetooth</Text>
-
-      {busy ? (
-        <View style={styles.busyBox}>
-          <ActivityIndicator color={Colors.accent} size="large" />
-          <Text style={styles.busyText}>
-            {scanning ? "Buscando WeatherStation…" : "Conectando…"}
-          </Text>
-        </View>
-      ) : (
-        <Pressable
-          style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
-          onPress={connect}
+    <View style={styles.root}>
+      <AmbientBackground gradient={gradient} />
+      <SafeAreaView style={styles.safe}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.container}
+          showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.buttonText}>Conectar</Text>
-        </Pressable>
-      )}
-
-      {__DEV__ && !busy && (
-        <Pressable onPress={startDemo}>
-          <Text style={styles.demoText}>Modo demo</Text>
-        </Pressable>
-      )}
-
-      {error && (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>{error}</Text>
-          <Pressable onPress={connect} style={styles.retryButton}>
-            <Text style={styles.retryText}>Reintentar</Text>
+          <Pressable
+            style={styles.place}
+            onLongPress={__DEV__ ? startDemo : undefined}
+            delayLongPress={600}
+          >
+            <Text style={styles.placeText}>Estación</Text>
+            {dotColor != null && (
+              <View style={[styles.liveDot, { backgroundColor: dotColor }]} />
+            )}
+            <Text style={styles.placeText}>{livenessText}</Text>
           </Pressable>
-        </View>
-      )}
+
+          <View style={[styles.hero, !live && styles.attenuated]}>
+            <View style={styles.heroRow}>
+              <Text style={[styles.heroValue, { color: gradient.accent }]}>{temp}</Text>
+              {data?.t != null && (
+                <Text style={[styles.heroDegree, { color: gradient.accent }]}>°</Text>
+              )}
+            </View>
+            {contextParts.length > 0 && (
+              <Text style={styles.heroContext}>{contextParts.join(" · ")}</Text>
+            )}
+          </View>
+
+          {sparkValues.length >= 2 && (
+            <View style={[styles.spark, !live && styles.attenuated]}>
+              <Sparkline values={sparkValues} color={gradient.accent} height={64} />
+              <Text style={styles.sparkLabel}>Últimas 3 h</Text>
+            </View>
+          )}
+
+          {data != null && (
+            <View style={[styles.belt, !live && styles.attenuated]}>
+              <View style={styles.metric}>
+                <Droplets size={20} color={gradient.accent} strokeWidth={2} />
+                <Text style={styles.metricValue}>{hum}</Text>
+                <Text style={styles.metricLabel}>Humedad</Text>
+              </View>
+              <View style={styles.metric}>
+                <Wind size={20} color={gradient.accent} strokeWidth={2} />
+                <Text style={styles.metricValue}>{windSpeed}</Text>
+                <Text style={styles.metricLabel}>Viento</Text>
+              </View>
+            </View>
+          )}
+        </ScrollView>
+      </SafeAreaView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  root: {
     flex: 1,
-    backgroundColor: Colors.background,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 32,
-    gap: 16,
+    backgroundColor: "#0D1117",
   },
-  title: {
-    fontSize: 72,
+  safe: {
+    flex: 1,
   },
-  appName: {
-    fontSize: 28,
-    fontWeight: "700",
-    color: Colors.text,
-    letterSpacing: -0.5,
+  scroll: {
+    flex: 1,
   },
-  subtitle: {
-    fontSize: 15,
-    color: Colors.textMuted,
-    textAlign: "center",
-    lineHeight: 22,
-    marginBottom: 16,
-  },
-  busyBox: {
-    alignItems: "center",
-    gap: 12,
-    marginTop: 8,
-  },
-  busyText: {
-    color: Colors.textMuted,
-    fontSize: 15,
-  },
-  button: {
-    backgroundColor: Colors.accent,
-    paddingHorizontal: 48,
-    paddingVertical: 14,
-    borderRadius: 12,
-    marginTop: 8,
-  },
-  buttonPressed: {
-    opacity: 0.8,
-  },
-  buttonText: {
-    color: "#fff",
-    fontSize: 17,
-    fontWeight: "600",
-  },
-  demoText: {
-    color: Colors.textMuted,
-    fontSize: 13,
-    textDecorationLine: "underline",
-  },
-  errorBox: {
-    alignItems: "center",
-    gap: 10,
-    marginTop: 8,
-    padding: 16,
-    backgroundColor: Colors.card,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.red,
-    width: "100%",
-  },
-  errorText: {
-    color: Colors.red,
-    fontSize: 14,
-    textAlign: "center",
-  },
-  retryButton: {
+  container: {
+    flexGrow: 1,
     paddingHorizontal: 24,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: Colors.accent,
+    paddingTop: 24,
+    paddingBottom: 32,
   },
-  retryText: {
-    color: Colors.accent,
-    fontSize: 14,
-    fontWeight: "600",
+  place: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  placeText: {
+    fontSize: 15,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  attenuated: {
+    opacity: 0.55,
+  },
+  hero: {
+    alignItems: "center",
+    marginTop: 48,
+    marginBottom: 48,
+  },
+  heroRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  heroValue: {
+    fontSize: 96,
+    fontWeight: "200",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -2,
+  },
+  heroDegree: {
+    fontSize: 38,
+    fontWeight: "300",
+    marginTop: 14,
+  },
+  heroContext: {
+    fontSize: 15,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+    marginTop: 4,
+  },
+  spark: {
+    marginBottom: 32,
+    gap: 8,
+  },
+  sparkLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    textAlign: "center",
+  },
+  belt: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  metric: {
+    flex: 1,
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 20,
+    borderRadius: 16,
+    backgroundColor: Palette.surface,
+  },
+  metricValue: {
+    fontSize: 28,
+    fontWeight: "300",
+    fontVariant: ["tabular-nums"],
+    color: Palette.text,
+  },
+  metricLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: Palette.textSecondary,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
   },
 });

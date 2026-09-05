@@ -114,6 +114,21 @@ actual. Pasan de ser *el plan* a ser *detalles de ejecución*.
 
 ---
 
+## Extensibilidad: sensores futuros (veleta, pluviómetro)
+
+El pilar 4 (honestidad) sacó dirección y lluvia porque eran mock; cuando lleguen los
+sensores reales, vuelven **como datos con profundidad**, y el layout ya tiene su lugar:
+
+- **Veleta**: la dirección no es una métrica aparte, es un atributo del viento. Se funde
+  en la métrica de viento ("18 km/h · NE", como ya muestra el wireframe) y orienta las
+  partículas de fondo. Cero cambios de estructura.
+- **Pluviómetro**: tercera métrica del cinturón ("0.4 mm hoy"). La lluvia es un evento:
+  cuando llueve, además modula el lienzo (matiz más frío/gris, partículas de lluvia) y
+  puede ascender temporalmente en jerarquía. El cinturón está diseñado para 2–4 métricas
+  sin romperse.
+- Regla general: **cada sensor nuevo entra por el cinturón**; solo asciende (héroe,
+  fondo) si su estado presente cambia lo que el usuario debería sentir de un vistazo.
+
 ## Primer paso sugerido
 
 Prototipo navegable de la **pantalla-héroe** (fondo ambiental + héroe + sparkline) en una

@@ -9,7 +9,15 @@ import {
   destroyManager,
 } from "@/ble/weather-ble";
 
-export type BLEStatus = "idle" | "scanning" | "connecting" | "connected" | "error";
+// La conexión se disuelve: el hook busca, conecta y reconecta solo, en
+// background. La UI solo consume status/data; nunca inicia la conexión.
+export type BLEStatus =
+  | "starting"
+  | "scanning"
+  | "connecting"
+  | "connected"
+  | "offline"
+  | "no-permission";
 
 export type WeatherData = {
   t: number | null;
@@ -27,6 +35,9 @@ export type Reading = {
 
 // ~3 h de lecturas a una notificación cada ~2 s.
 const HISTORY_MAX = 5400;
+
+// Espera entre reintentos cuando no se encuentra la estación.
+const RETRY_MS = 8000;
 
 async function requestBLEPermissions(): Promise<boolean> {
   if (Platform.OS !== "android") return true;
@@ -46,17 +57,19 @@ async function requestBLEPermissions(): Promise<boolean> {
 }
 
 export function useWeatherBLE() {
-  const [status, setStatus] = useState<BLEStatus>("idle");
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<BLEStatus>("starting");
   const [data, setData] = useState<WeatherData | null>(null);
   const [history, setHistory] = useState<Reading[]>([]);
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
-  const [deviceId, setDeviceId] = useState<string | null>(null);
 
   const scanRef = useRef<{ stop: () => void } | null>(null);
   const subscriptionRef = useRef<Subscription | null>(null);
   const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const demoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const deviceIdRef = useRef<string | null>(null);
+  const aliveRef = useRef(true);
+  const attemptingRef = useRef(false);
 
   const handleReading = useCallback((payload: WeatherData) => {
     const ts = Date.now();
@@ -70,14 +83,16 @@ export function useWeatherBLE() {
     });
   }, []);
 
-  const cleanup = useCallback(() => {
+  const clearTimers = useCallback(() => {
     scanRef.current?.stop();
     scanRef.current = null;
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
-    if (scanTimeoutRef.current) {
-      clearTimeout(scanTimeoutRef.current);
-      scanTimeoutRef.current = null;
+    for (const ref of [scanTimeoutRef, retryTimerRef]) {
+      if (ref.current) {
+        clearTimeout(ref.current);
+        ref.current = null;
+      }
     }
     if (demoTimerRef.current) {
       clearInterval(demoTimerRef.current);
@@ -85,20 +100,81 @@ export function useWeatherBLE() {
     }
   }, []);
 
-  const disconnect = useCallback(() => {
-    cleanup();
-    if (deviceId) disconnectDevice(deviceId);
-    setDeviceId(null);
-    setData(null);
-    setStatus("idle");
-    setError(null);
-  }, [cleanup, deviceId]);
+  const attempt = useCallback(async () => {
+    if (!aliveRef.current || attemptingRef.current || demoTimerRef.current) return;
+    attemptingRef.current = true;
+
+    const granted = await requestBLEPermissions();
+    if (!aliveRef.current) {
+      attemptingRef.current = false;
+      return;
+    }
+    if (!granted) {
+      setStatus("no-permission");
+      attemptingRef.current = false;
+      return;
+    }
+
+    setStatus("scanning");
+    let found = false;
+
+    const scheduleRetry = () => {
+      attemptingRef.current = false;
+      if (!aliveRef.current) return;
+      setStatus("offline");
+      retryTimerRef.current = setTimeout(() => attempt(), RETRY_MS);
+    };
+
+    const onDevice = async (device: Device) => {
+      if (found) return;
+      found = true;
+      scanRef.current?.stop();
+      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+
+      setStatus("connecting");
+      try {
+        const connected = await connectToWeatherStation(device.id);
+        if (!aliveRef.current) return;
+        deviceIdRef.current = connected.id;
+        setStatus("connected");
+        attemptingRef.current = false;
+
+        subscriptionRef.current = subscribeToWeatherData(
+          connected,
+          handleReading,
+          () => {
+            // Error de notificación: la desconexión dispara la reconexión.
+          },
+        );
+
+        connected.onDisconnected(() => {
+          subscriptionRef.current?.remove();
+          subscriptionRef.current = null;
+          deviceIdRef.current = null;
+          if (!aliveRef.current) return;
+          setStatus("offline");
+          retryTimerRef.current = setTimeout(() => attempt(), 2000);
+        });
+      } catch {
+        scheduleRetry();
+      }
+    };
+
+    scanRef.current = scanForWeatherStation(onDevice, () => scheduleRetry());
+
+    scanTimeoutRef.current = setTimeout(() => {
+      if (!found) {
+        scanRef.current?.stop();
+        scheduleRetry();
+      }
+    }, 10_000);
+  }, [handleReading]);
 
   // Solo desarrollo: simula lecturas para iterar la UI sin la estación física.
   const startDemo = useCallback(() => {
     if (!__DEV__) return;
-    cleanup();
-    setError(null);
+    clearTimers();
+    attemptingRef.current = false;
 
     const sample = (ts: number): WeatherData => {
       const s = ts / 1000;
@@ -124,80 +200,19 @@ export function useWeatherBLE() {
     tick();
     demoTimerRef.current = setInterval(tick, 2000);
     setStatus("connected");
-  }, [cleanup, handleReading]);
+  }, [clearTimers, handleReading]);
 
-  const connect = useCallback(async () => {
-    cleanup();
-    setError(null);
-    setData(null);
-
-    const granted = await requestBLEPermissions();
-    if (!granted) {
-      setError("Se necesitan permisos de Bluetooth para conectar");
-      setStatus("error");
-      return;
-    }
-
-    setStatus("scanning");
-
-    let found = false;
-
-    const onDevice = async (device: Device) => {
-      if (found) return;
-      found = true;
-      scanRef.current?.stop();
-      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
-
-      setStatus("connecting");
-      try {
-        const connected = await connectToWeatherStation(device.id);
-        setDeviceId(connected.id);
-        setStatus("connected");
-
-        subscriptionRef.current = subscribeToWeatherData(
-          connected,
-          handleReading,
-          (err) => {
-            setError(err.message);
-            setStatus("error");
-          },
-        );
-
-        connected.onDisconnected(() => {
-          subscriptionRef.current?.remove();
-          subscriptionRef.current = null;
-          setStatus("idle");
-          setDeviceId(null);
-        });
-      } catch (err: any) {
-        setError(err.message ?? "Error al conectar");
-        setStatus("error");
-      }
-    };
-
-    scanRef.current = scanForWeatherStation(onDevice, (err) => {
-      setError(err.message);
-      setStatus("error");
-    });
-
-    scanTimeoutRef.current = setTimeout(() => {
-      if (!found) {
-        scanRef.current?.stop();
-        setError("No se encontró WeatherStation (10 s)");
-        setStatus("error");
-      }
-    }, 10_000);
-  }, [cleanup, handleReading]);
-
-  // Al desmontar: además de limpiar scan/suscripción, destruir el BleManager
-  // para no filtrar el cliente GATT nativo entre recargas de JS.
-  useEffect(
-    () => () => {
-      cleanup();
+  useEffect(() => {
+    aliveRef.current = true;
+    attempt();
+    return () => {
+      aliveRef.current = false;
+      clearTimers();
+      if (deviceIdRef.current) disconnectDevice(deviceIdRef.current);
+      deviceIdRef.current = null;
       destroyManager();
-    },
-    [cleanup],
-  );
+    };
+  }, [attempt, clearTimers]);
 
-  return { status, error, data, history, lastUpdate, connect, disconnect, startDemo };
+  return { status, data, history, lastUpdate, startDemo };
 }

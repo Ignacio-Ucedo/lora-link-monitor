@@ -3,12 +3,9 @@ import { useWeatherBLE, BLEStatus, WeatherData, Reading } from "./useWeatherBLE"
 
 type WeatherContextValue = {
   status: BLEStatus;
-  error: string | null;
   data: WeatherData | null;
   history: Reading[];
   lastUpdate: number | null;
-  connect: () => void;
-  disconnect: () => void;
   startDemo: () => void;
 };
 
