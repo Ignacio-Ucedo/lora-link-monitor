@@ -228,6 +228,7 @@ lora/                          ← raíz del repo
 
 ## Referencias rápidas
 
+- **Hardware (alimentación, sensores, pines)**: [`HARDWARE.md`](HARDWARE.md)
 - **Rediseño UX/UI (propuesta)**: [`weather_app/docs/UX_REDESIGN.md`](weather_app/docs/UX_REDESIGN.md)
 - Sketch base actual: en el mensaje de arranque del proyecto (pin 21 = DHT22, pin 26 = anemómetro)
 - BLE manager de lora_app: `lora_app/ble/ble-manager.tsx` (referencia de patrones)
