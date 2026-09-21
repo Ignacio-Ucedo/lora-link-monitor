@@ -1,5 +1,6 @@
 import { createContext, useContext, ReactNode } from "react";
 import { useWeatherBLE, BLEStatus, WeatherData, Reading } from "./useWeatherBLE";
+import { StationConfig } from "@/ble/weather-ble";
 import { DayStats } from "@/storage/dayStats";
 
 type WeatherContextValue = {
@@ -8,7 +9,10 @@ type WeatherContextValue = {
   history: Reading[];
   lastUpdate: number | null;
   dayStats: DayStats | null;
+  config: StationConfig | null;
   startDemo: () => void;
+  setSampleInterval: (ms: number) => Promise<boolean>;
+  calibrateNorth: () => Promise<boolean>;
 };
 
 const WeatherContext = createContext<WeatherContextValue | null>(null);

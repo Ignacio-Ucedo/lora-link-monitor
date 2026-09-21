@@ -8,6 +8,9 @@ import {
   disconnectDevice,
   destroyManager,
   getBleManager,
+  readStationConfig,
+  writeStationCommand,
+  StationConfig,
 } from "@/ble/weather-ble";
 import {
   DayStats,
@@ -24,6 +27,7 @@ export type BLEStatus =
   | "connecting"
   | "connected"
   | "offline"
+  | "bluetooth-off"
   | "no-permission";
 
 export type WeatherData = {
@@ -31,6 +35,7 @@ export type WeatherData = {
   h: number | null;
   w: number | null;
   d: string | null;
+  r: number | null;
 };
 
 export type Reading = {
@@ -70,6 +75,7 @@ export function useWeatherBLE() {
   const [history, setHistory] = useState<Reading[]>([]);
   const [lastUpdate, setLastUpdate] = useState<number | null>(null);
   const [dayStats, setDayStats] = useState<DayStats | null>(null);
+  const [config, setConfig] = useState<StationConfig | null>(null);
 
   const dayStatsRef = useRef<DayStats | null>(null);
   const scanRef = useRef<{ stop: () => void } | null>(null);
@@ -78,8 +84,10 @@ export function useWeatherBLE() {
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const demoTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const deviceIdRef = useRef<string | null>(null);
+  const deviceRef = useRef<Device | null>(null);
   const aliveRef = useRef(true);
   const attemptingRef = useRef(false);
+  const btOffRef = useRef(false);
 
   const handleReading = useCallback((payload: WeatherData) => {
     const ts = Date.now();
@@ -137,6 +145,14 @@ export function useWeatherBLE() {
       return;
     }
 
+    // El adaptador está apagado (lo supimos por onStateChange mientras pedíamos
+    // permisos): escanear fallaría en bucle. Avisamos y esperamos a PoweredOn.
+    if (btOffRef.current) {
+      setStatus("bluetooth-off");
+      attemptingRef.current = false;
+      return;
+    }
+
     setStatus("scanning");
     let found = false;
 
@@ -158,8 +174,17 @@ export function useWeatherBLE() {
         const connected = await connectToWeatherStation(device.id);
         if (!aliveRef.current) return;
         deviceIdRef.current = connected.id;
+        deviceRef.current = connected;
         setStatus("connected");
         attemptingRef.current = false;
+
+        // Config actual de la estación (intervalo + Norte); alimenta Ajustes y
+        // la lógica de frescura del dato.
+        readStationConfig(connected)
+          .then((cfg) => {
+            if (aliveRef.current && cfg) setConfig(cfg);
+          })
+          .catch(() => {});
 
         subscriptionRef.current = subscribeToWeatherData(
           connected,
@@ -173,6 +198,7 @@ export function useWeatherBLE() {
           subscriptionRef.current?.remove();
           subscriptionRef.current = null;
           deviceIdRef.current = null;
+          deviceRef.current = null;
           if (!aliveRef.current) return;
           setStatus("offline");
           retryTimerRef.current = setTimeout(() => attempt(), 2000);
@@ -207,6 +233,8 @@ export function useWeatherBLE() {
         h: 55 + 8 * Math.sin(s / 2600 + 1),
         w: Math.max(0, 11 + 7 * Math.sin(s / 700)),
         d: "NE",
+        // Lluvia acumulada: rampa lenta para poblar la métrica en la demo.
+        r: Number(((s / 900) % 8).toFixed(1)),
       };
     };
 
@@ -227,8 +255,35 @@ export function useWeatherBLE() {
     const tick = () => handleReading(sample(Date.now()));
     tick();
     demoTimerRef.current = setInterval(tick, 2000);
+    setConfig({ intervalMs: 2000, north: 0 });
     setStatus("connected");
   }, [clearTimers, handleReading]);
+
+  // Ajustes: escriben a la estación y reflejan la config resultante. Devuelven
+  // false si no hay conexión activa (no se puede configurar offline).
+  const setSampleInterval = useCallback(async (ms: number): Promise<boolean> => {
+    const dev = deviceRef.current;
+    if (!dev) return false;
+    try {
+      const cfg = await writeStationCommand(dev, { cmd: "set_interval", ms });
+      setConfig(cfg ?? { intervalMs: ms, north: config?.north ?? 0 });
+      return true;
+    } catch {
+      return false;
+    }
+  }, [config?.north]);
+
+  const calibrateNorth = useCallback(async (): Promise<boolean> => {
+    const dev = deviceRef.current;
+    if (!dev) return false;
+    try {
+      const cfg = await writeStationCommand(dev, { cmd: "set_north" });
+      if (cfg) setConfig(cfg);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
 
   useEffect(() => {
     aliveRef.current = true;
@@ -248,9 +303,20 @@ export function useWeatherBLE() {
     let btSub: { remove: () => void } | null = null;
     if (manager) {
       btSub = manager.onStateChange((state) => {
-        if (state === "PoweredOn" && aliveRef.current && !attemptingRef.current && !demoTimerRef.current) {
+        if (state === "PoweredOn") {
+          btOffRef.current = false;
+          if (aliveRef.current && !attemptingRef.current && !demoTimerRef.current) {
+            clearTimers();
+            attempt();
+          }
+        } else if (state === "PoweredOff") {
+          // BT apagado: matamos scan/conexión y avisamos. Al volver a PoweredOn
+          // relanzamos el intento (rama de arriba).
+          btOffRef.current = true;
+          if (!aliveRef.current || demoTimerRef.current) return;
           clearTimers();
-          attempt();
+          attemptingRef.current = false;
+          setStatus("bluetooth-off");
         }
       }, true);
     }
@@ -265,5 +331,15 @@ export function useWeatherBLE() {
     };
   }, [attempt, clearTimers]);
 
-  return { status, data, history, lastUpdate, dayStats, startDemo };
+  return {
+    status,
+    data,
+    history,
+    lastUpdate,
+    dayStats,
+    config,
+    startDemo,
+    setSampleInterval,
+    calibrateNorth,
+  };
 }

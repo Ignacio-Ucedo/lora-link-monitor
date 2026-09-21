@@ -1,6 +1,13 @@
 import { BleManager, Device, Subscription } from "react-native-ble-plx";
 import { Buffer } from "buffer";
-import { DEVICE_NAME, SERVICE_UUID, CHARACTERISTIC_UUID } from "@/constants/ble";
+import {
+  DEVICE_NAME,
+  SERVICE_UUID,
+  CHARACTERISTIC_UUID,
+  CONFIG_CHARACTERISTIC_UUID,
+} from "@/constants/ble";
+
+export type StationConfig = { intervalMs: number; north: number };
 
 let _manager: BleManager | null = null;
 
@@ -58,6 +65,7 @@ export function subscribeToWeatherData(
     h: number | null;
     w: number | null;
     d: string | null;
+    r: number | null;
   }) => void,
   onError: (error: Error) => void,
 ): Subscription {
@@ -85,12 +93,49 @@ export function subscribeToWeatherData(
           h: num(parsed.h),
           w: num(parsed.w),
           d: typeof parsed.d === "string" ? parsed.d : null,
+          r: num(parsed.r),
         });
       } catch {
         // malformed payload — ignore
       }
     },
   );
+}
+
+// Lee la config actual de la estación (intervalo de muestreo y Norte de veleta).
+export async function readStationConfig(device: Device): Promise<StationConfig | null> {
+  const c = await device.readCharacteristicForService(
+    SERVICE_UUID,
+    CONFIG_CHARACTERISTIC_UUID,
+  );
+  if (!c?.value) return null;
+  try {
+    const decoded = Buffer.from(c.value, "base64").toString("utf-8");
+    const end = decoded.lastIndexOf("}");
+    const json = end >= 0 ? decoded.slice(0, end + 1) : decoded;
+    const p = JSON.parse(json);
+    return {
+      intervalMs: typeof p.interval_ms === "number" ? p.interval_ms : 2000,
+      north: typeof p.north === "number" ? p.north : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Escribe un comando JSON en la característica de config y devuelve el estado
+// resultante (el firmware refleja la config nueva en el mismo atributo).
+export async function writeStationCommand(
+  device: Device,
+  cmd: Record<string, unknown>,
+): Promise<StationConfig | null> {
+  const payload = Buffer.from(JSON.stringify(cmd), "utf-8").toString("base64");
+  await device.writeCharacteristicWithResponseForService(
+    SERVICE_UUID,
+    CONFIG_CHARACTERISTIC_UUID,
+    payload,
+  );
+  return readStationConfig(device);
 }
 
 export function getBleManager() {
